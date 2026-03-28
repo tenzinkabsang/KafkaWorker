@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<IsPackable>true</IsPackable>
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<PackageId>KafkaWorker.JsonSchema</PackageId>
+		<Description>JSON Schema serialization support for KafkaWorker via Confluent Schema Registry.</Description>
+		<RepositoryUrl>https://github.com/tenzinkabsang/KafkaWorker</RepositoryUrl>
+		<Authors>Tenzin Kabsang</Authors>
+		<PackageTags>kafka;consumer;json;json-schema;schema-registry;kafkaworker</PackageTags>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\KafkaWorker\KafkaWorker.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Confluent.SchemaRegistry.Serdes.Json" Version="2.13.0" />
+	</ItemGroup>
+
+</Project>

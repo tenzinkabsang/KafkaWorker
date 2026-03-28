@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+	<PropertyGroup>
+		<TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+		<DockerfileContext>.</DockerfileContext>
+		<DockerfileFile>Dockerfile</DockerfileFile>
+	</PropertyGroup>
+	<ItemGroup>
+		<PackageReference Include="Google.Protobuf" Version="3.33.4" />
+		<PackageReference Include="Grpc.Net.ClientFactory" Version="2.32.0" />
+		<PackageReference Include="Grpc.Tools" Version="2.32.0" PrivateAssets="All" />
+		<PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.21.0" />
+	</ItemGroup>
+	<ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+		<PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+		<PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.1" />
+	</ItemGroup>
+	<ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+		<PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.2" />
+		<PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.2" />
+	</ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\KafkaWorker\KafkaWorker.csproj" />
+    <ProjectReference Include="..\KafkaWorker.Avro\KafkaWorker.Avro.csproj" />
+    <ProjectReference Include="..\KafkaWorker.Protobuf\KafkaWorker.Protobuf.csproj" />
+    <ProjectReference Include="..\KafkaWorker.JsonSchema\KafkaWorker.JsonSchema.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Protobuf Include="Messages\order.proto" GrpcServices="Client" />
+  </ItemGroup>
+</Project>

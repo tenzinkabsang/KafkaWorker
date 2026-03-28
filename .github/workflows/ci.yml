@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.x
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build -c Release --no-restore /p:ContinuousIntegrationBuild=true
+
+      - name: Unit Tests
+        run: dotnet test KafkaWorker.Tests -c Release --no-build --logger "trx;LogFileName=results.trx"
+
+      - name: Start Kafka (docker-compose)
+        run: docker compose up -d --wait
+
+      - name: Integration Tests
+        run: dotnet test KafkaWorker.IntegrationTests -c Release --no-build --framework net10.0 --logger "trx;LogFileName=integration-results.trx"
+
+      - name: Stop Kafka (docker-compose)
+        if: always()
+        run: docker compose down -v
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: "**/*.trx"

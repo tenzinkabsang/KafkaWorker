@@ -1,0 +1,31 @@
+﻿{
+  "type": "record",
+  "name": "AvroOrderMessage",
+  "namespace": "KafkaWorker.Sample",
+  "fields": [
+    {
+      "name": "OrderId",
+      "type": "int"
+    },
+    {
+      "name": "SellerId",
+      "type": [ "string", "null" ]
+    },
+    {
+      "name": "OrderDate",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "Total",
+      "type": {
+        "type": "bytes",
+        "logicalType": "decimal",
+        "precision": 10,
+        "scale": 2
+      }
+    }
+  ]
+}

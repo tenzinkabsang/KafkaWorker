@@ -1,0 +1,27 @@
+# Copilot Ignore
+# Exclude build artifacts and generated files from Copilot context
+
+# Build output
+**/bin/
+**/obj/
+
+# NuGet packages
+**/nupkgs/
+**/*.nupkg
+**/*.snupkg
+
+# IDE and tooling
+.vs/
+*.user
+*.suo
+
+# Test results
+**/*.trx
+**/TestResults/
+
+# Docker certificates
+cert/
+
+# Temporary files
+*.tmp
+temp_*.txt

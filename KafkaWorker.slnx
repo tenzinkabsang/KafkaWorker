@@ -1,0 +1,14 @@
+<Solution>
+   <Folder Name="/Solution Items/">
+    <File Path="docker-compose.yml" />
+  </Folder>
+   <Folder Name="/Tests/">
+      <Project Path="KafkaWorker.IntegrationTests/KafkaWorker.IntegrationTests.csproj" Id="27255d02-fdb1-4de9-b9ce-fdcfc797c6b7" />
+      <Project Path="KafkaWorker.Tests/KafkaWorker.Tests.csproj" />
+      <Project Path="KafkaWorker.Worker/KafkaWorker.Worker.csproj" Id="8591ddad-2a98-4cf3-ac25-a388afe0b1a9" />
+   </Folder>
+   <Project Path="KafkaWorker.Avro/KafkaWorker.Avro.csproj" />
+   <Project Path="KafkaWorker.JsonSchema/KafkaWorker.JsonSchema.csproj" />
+   <Project Path="KafkaWorker.Protobuf/KafkaWorker.Protobuf.csproj" />
+   <Project Path="KafkaWorker/KafkaWorker.csproj" />
+</Solution>
