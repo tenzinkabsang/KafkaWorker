@@ -74,3 +74,10 @@ launchSettings.json
 # Others
 initial_thought.md
 todo.md
+
+# Local Copilot customizations (not for the repo)
+.github/agents/
+.github/copilot-instructions.md
+.github/instructions/
+.github/prompts/
+.github/skills/
