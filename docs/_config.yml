@@ -1,0 +1,45 @@
+title: KafkaWorker
+description: >-
+  A .NET library that abstracts Kafka consumer infrastructure — retry, DLQ,
+  offset management, and DLQ reprocessing — so you can focus on business logic.
+
+remote_theme: just-the-docs/just-the-docs@v0.10.0
+plugins:
+  - jekyll-remote-theme
+
+baseurl: "/KafkaWorker"
+url: "https://tenzinkabsang.github.io"
+
+author: Tenzin Kabsang
+repository: tenzinkabsang/KafkaWorker
+
+kramdown:
+  input: GFM
+
+color_scheme: dark
+
+search_enabled: true
+search.button: true
+
+aux_links:
+  "View on GitHub":
+    - "https://github.com/tenzinkabsang/KafkaWorker"
+aux_links_new_tab: true
+
+footer_content: >-
+  KafkaWorker is distributed under the
+  <a href="https://github.com/tenzinkabsang/KafkaWorker/blob/main/LICENSE">MIT License</a>.
+
+back_to_top: true
+back_to_top_text: "Back to top"
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - README.md
