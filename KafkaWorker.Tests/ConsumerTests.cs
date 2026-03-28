@@ -241,8 +241,11 @@ public class ConsumerTests : IDisposable
                 throw new InvalidOperationException("Kafka broker unavailable");
             });
 
-        await sut.StartAsync(_cts.Token);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ExecuteTask!);
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await sut.StartAsync(_cts.Token);
+            await sut.ExecuteTask!;
+        });
 
         _kafkaConsumer.Received(1).Close();
     }
@@ -277,8 +280,11 @@ public class ConsumerTests : IDisposable
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ => throw new InvalidOperationException("fatal"));
 
-        await sut.StartAsync(_cts.Token);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ExecuteTask!);
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await sut.StartAsync(_cts.Token);
+            await sut.ExecuteTask!;
+        });
 
         _logger.Received().Log(
             LogLevel.Critical,
