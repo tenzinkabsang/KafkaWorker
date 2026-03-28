@@ -11,10 +11,18 @@
 		<RepositoryUrl>https://github.com/tenzinkabsang/KafkaWorker</RepositoryUrl>
 		<Authors>Tenzin Kabsang</Authors>
 		<PackageTags>kafka;consumer;protobuf;schema-registry;kafkaworker</PackageTags>
+		<IncludeSymbols>true</IncludeSymbols>
+		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
+		<PublishRepositoryUrl>true</PublishRepositoryUrl>
+		<EmbedUntrackedSources>true</EmbedUntrackedSources>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<ProjectReference Include="..\KafkaWorker\KafkaWorker.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
 	</ItemGroup>
 
 	<ItemGroup>
