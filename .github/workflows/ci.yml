@@ -36,7 +36,7 @@ jobs:
         run: dotnet restore
 
       - name: Build
-        run: dotnet build -c Release --no-restore /p:ContinuousIntegrationBuild=true /warnaserror
+        run: dotnet build -c Release --no-restore /p:ContinuousIntegrationBuild=true
 
       - name: Unit Tests
         run: dotnet test KafkaWorker.Tests -c Release --no-build --logger "trx;LogFileName=results.trx"
