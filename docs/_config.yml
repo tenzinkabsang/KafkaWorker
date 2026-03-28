@@ -15,8 +15,9 @@ repository: tenzinkabsang/KafkaWorker
 
 kramdown:
   input: GFM
+  syntax_highlighter: rouge
 
-color_scheme: dark
+color_scheme: light
 
 search_enabled: true
 search.button: true
