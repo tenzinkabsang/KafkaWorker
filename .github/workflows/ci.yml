@@ -36,7 +36,7 @@ jobs:
         run: dotnet restore
 
       - name: Build
-        run: dotnet build -c Release --no-restore /p:ContinuousIntegrationBuild=true
+        run: dotnet build -c Release --no-restore /p:ContinuousIntegrationBuild=true /warnaserror
 
       - name: Unit Tests
         run: dotnet test KafkaWorker.Tests -c Release --no-build --logger "trx;LogFileName=results.trx"
@@ -56,4 +56,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: "**/*.trx"
+          path: "**/*-results.trx"

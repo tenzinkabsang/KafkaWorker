@@ -38,7 +38,7 @@ jobs:
         run: dotnet restore
 
       - name: Build
-        run: dotnet build -c Release --no-restore /p:ContinuousIntegrationBuild=true
+        run: dotnet build -c Release --no-restore /p:ContinuousIntegrationBuild=true /warnaserror
 
       - name: Test
         run: dotnet test KafkaWorker.Tests -c Release --no-build
