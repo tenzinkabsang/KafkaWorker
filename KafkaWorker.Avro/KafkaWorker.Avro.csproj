@@ -7,7 +7,7 @@
 		<IsPackable>true</IsPackable>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<PackageId>KafkaWorker.Avro</PackageId>
-		<Description>Avro serialization support for KafkaWorker via Confluent Schema Registry.</Description>
+		<Description>Avro deserialization add-on for KafkaWorker. Adds AddKafkaWorkerAvro registration using Confluent Schema Registry. Requires the KafkaWorker package.</Description>
 		<RepositoryUrl>https://github.com/tenzinkabsang/KafkaWorker</RepositoryUrl>
 		<Authors>Tenzin Kabsang</Authors>
 		<PackageTags>kafka;consumer;avro;schema-registry;kafkaworker</PackageTags>

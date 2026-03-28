@@ -7,7 +7,7 @@
 		<IsPackable>true</IsPackable>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<PackageId>KafkaWorker</PackageId>
-		<Description>Abstracts Kafka consumer internals — retry, DLQ, offset management, and DLQ reprocessing are handled by the library. Consumers implement IMessageHandler&lt;TMessage&gt;. Supports Avro, JSON, Protobuf, and Schema Registry.</Description>
+		<Description>.NET Kafka consumer library with automatic retry, dead letter queue, offset management, and DLQ reprocessing. Implement IMessageHandler&lt;TMessage&gt; and the library handles everything else. Includes plain JSON deserialization via System.Text.Json.</Description>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<RepositoryUrl>https://github.com/tenzinkabsang/KafkaWorker</RepositoryUrl>

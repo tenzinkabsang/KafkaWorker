@@ -7,7 +7,7 @@
 		<IsPackable>true</IsPackable>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<PackageId>KafkaWorker.Protobuf</PackageId>
-		<Description>Protobuf serialization support for KafkaWorker via Confluent Schema Registry.</Description>
+		<Description>Protobuf deserialization add-on for KafkaWorker. Adds AddKafkaWorkerProtobuf registration using Confluent Schema Registry. Requires the KafkaWorker package.</Description>
 		<RepositoryUrl>https://github.com/tenzinkabsang/KafkaWorker</RepositoryUrl>
 		<Authors>Tenzin Kabsang</Authors>
 		<PackageTags>kafka;consumer;protobuf;schema-registry;kafkaworker</PackageTags>
