@@ -1,6 +1,11 @@
 # KafkaWorker
 
+[![NuGet Version](https://img.shields.io/nuget/v/KafkaWorker.svg?style=flat)](https://www.nuget.org/packages/KafkaWorker/)
+[![CI](https://github.com/tenzinkabsang/KafkaWorker/actions/workflows/ci.yml/badge.svg)](https://github.com/tenzinkabsang/KafkaWorker/actions/workflows/ci.yml)
+
 A .NET library that abstracts Kafka consumer infrastructure so you can focus on business logic. Implement `IMessageHandler<TMessage>` and the library handles the consume loop, offset management, retry with exponential backoff, dead letter queuing, and DLQ reprocessing.
+
+📖 **[Full Documentation](https://tenzinkabsang.github.io/KafkaWorker/)** — guides, configuration, and examples.
 
 Supports multiple consumers per host, scoped dependency injection per message, Avro / Protobuf / JSON serialization (with or without Schema Registry), custom key types, and OpenTelemetry-compatible metrics — all with sensible defaults and minimal configuration.
 
