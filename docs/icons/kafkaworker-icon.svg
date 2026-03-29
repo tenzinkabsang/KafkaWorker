@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <!-- Outer connector lines -->
+  <line x1="60" y1="8" x2="60" y2="19" stroke="#a855f7" stroke-width="1.5" opacity="0.6"/>
+  <line x1="103" y1="32" x2="94" y2="37" stroke="#a855f7" stroke-width="1.5" opacity="0.6"/>
+  <line x1="103" y1="88" x2="94" y2="83" stroke="#a855f7" stroke-width="1.5" opacity="0.6"/>
+  <line x1="60" y1="112" x2="60" y2="101" stroke="#a855f7" stroke-width="1.5" opacity="0.6"/>
+  <line x1="17" y1="88" x2="26" y2="83" stroke="#a855f7" stroke-width="1.5" opacity="0.6"/>
+  <line x1="17" y1="32" x2="26" y2="37" stroke="#a855f7" stroke-width="1.5" opacity="0.6"/>
+
+  <!-- Outer connector dots (purple) -->
+  <circle cx="60" cy="6" r="5" fill="#a855f7" stroke="#7c3aed" stroke-width="1.5"/>
+  <circle cx="105" cy="30" r="5" fill="#a855f7" stroke="#7c3aed" stroke-width="1.5"/>
+  <circle cx="105" cy="90" r="5" fill="#a855f7" stroke="#7c3aed" stroke-width="1.5"/>
+  <circle cx="60" cy="114" r="5" fill="#a855f7" stroke="#7c3aed" stroke-width="1.5"/>
+  <circle cx="15" cy="90" r="5" fill="#a855f7" stroke="#7c3aed" stroke-width="1.5"/>
+  <circle cx="15" cy="30" r="5" fill="#a855f7" stroke="#7c3aed" stroke-width="1.5"/>
+
+  <!-- White hexagon with purple border -->
+  <polygon points="60,19 94,38 94,82 60,101 26,82 26,38" fill="white" stroke="#7c3aed" stroke-width="2.5"/>
+
+  <!-- Purple K -->
+  <rect x="47" y="38" width="9" height="44" rx="3" fill="#7c3aed"/>
+  <path d="M56 60 L76 40" stroke="#7c3aed" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M56 60 L76 80" stroke="#7c3aed" stroke-width="10" stroke-linecap="round" fill="none"/>
+</svg>
