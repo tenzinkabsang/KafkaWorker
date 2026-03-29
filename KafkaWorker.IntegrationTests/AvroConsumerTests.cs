@@ -3,7 +3,7 @@ using Confluent.SchemaRegistry.Serdes;
 using KafkaWorker;
 using KafkaWorker.Avro;
 using KafkaWorker.Worker;
-using @KafkaWorker.Sample;
+using KafkaWorker.Sample;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Time.Testing;

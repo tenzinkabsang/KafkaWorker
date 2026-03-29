@@ -5,7 +5,7 @@
 //    is regenerated
 // </auto-generated>
 // ------------------------------------------------------------------------------
-namespace @KafkaWorker.Sample
+namespace KafkaWorker.Sample
 {
 	using System;
 	using System.Collections.Generic;
@@ -20,7 +20,7 @@ namespace @KafkaWorker.Sample
 		private int _OrderId;
 		private string _SellerId;
 		private System.DateTime _OrderDate;
-		private Avro.AvroDecimal _Total;
+		private global::Avro.AvroDecimal _Total;
 		public virtual global::Avro.Schema Schema
 		{
 			get
@@ -61,7 +61,7 @@ namespace @KafkaWorker.Sample
 				this._OrderDate = value;
 			}
 		}
-		public Avro.AvroDecimal Total
+		public global::Avro.AvroDecimal Total
 		{
 			get
 			{
@@ -90,7 +90,7 @@ namespace @KafkaWorker.Sample
 			case 0: this.OrderId = (System.Int32)fieldValue; break;
 			case 1: this.SellerId = (System.String)fieldValue; break;
 			case 2: this.OrderDate = (System.DateTime)fieldValue; break;
-			case 3: this.Total = (Avro.AvroDecimal)fieldValue; break;
+			case 3: this.Total = (global::Avro.AvroDecimal)fieldValue; break;
 			default: throw new global::Avro.AvroRuntimeException("Bad index " + fieldPos + " in Put()");
 			};
 		}

@@ -1,4 +1,4 @@
-using @KafkaWorker.Sample;
+using KafkaWorker.Sample;
 
 namespace KafkaWorker.Worker;
 
