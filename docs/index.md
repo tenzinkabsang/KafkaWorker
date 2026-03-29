@@ -11,18 +11,6 @@ permalink: /
   <a href="https://www.nuget.org/packages/KafkaWorker/">
     <img src="https://img.shields.io/nuget/v/KafkaWorker.svg?style=flat-square" alt="KafkaWorker NuGet Version">
   </a>
-  <a href="https://www.nuget.org/packages/KafkaWorker.Avro/">
-    <img src="https://img.shields.io/nuget/v/KafkaWorker.Avro.svg?style=flat-square&label=KafkaWorker.Avro" alt="KafkaWorker.Avro NuGet Version">
-  </a>
-  <a href="https://www.nuget.org/packages/KafkaWorker.Protobuf/">
-    <img src="https://img.shields.io/nuget/v/KafkaWorker.Protobuf.svg?style=flat-square&label=KafkaWorker.Protobuf" alt="KafkaWorker.Protobuf NuGet Version">
-  </a>
-  <a href="https://www.nuget.org/packages/KafkaWorker.JsonSchema/">
-    <img src="https://img.shields.io/nuget/v/KafkaWorker.JsonSchema.svg?style=flat-square&label=KafkaWorker.JsonSchema" alt="KafkaWorker.JsonSchema NuGet Version">
-  </a>
-  <a href="https://github.com/tenzinkabsang/KafkaWorker/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/tenzinkabsang/KafkaWorker?style=flat-square" alt="License">
-  </a>
 </p>
 
 A .NET library that abstracts Kafka consumer infrastructure so you can focus on business logic. Implement `IMessageHandler<TMessage>` and the library handles the consume loop, offset management, retry with exponential backoff, dead letter queuing, and DLQ reprocessing.
