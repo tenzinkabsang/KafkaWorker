@@ -3,7 +3,7 @@ description: >-
   A .NET library that abstracts Kafka consumer infrastructure — retry, DLQ,
   offset management, and DLQ reprocessing — so you can focus on business logic.
 
-logo: "/KafkaWorker/docs/icons/kafkaworker-logo-horizontal.svg"
+logo: "/icons/kafkaworker-logo-horizontal.svg"
 
 remote_theme: just-the-docs/just-the-docs@v0.10.0
 plugins:
