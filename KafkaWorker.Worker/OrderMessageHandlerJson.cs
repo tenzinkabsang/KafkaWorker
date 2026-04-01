@@ -1,6 +1,6 @@
 namespace KafkaWorker.Worker;
 
-public sealed class OrderMessageProcessorRegistryJson(ILogger<OrderMessageProcessorRegistryJson> logger) : IMessageHandler<OrderMessage>
+public sealed class OrderMessageHandlerJson(ILogger<OrderMessageHandlerJson> logger) : IMessageHandler<OrderMessage>
 {
     // In-memory storage for processed orders (for demonstration purposes)
     private readonly IList<OrderMessage> _orders = [];
@@ -15,7 +15,7 @@ public sealed class OrderMessageProcessorRegistryJson(ILogger<OrderMessageProces
 
         _orders.Add(message);
 
-        logger.LogInformation($"{nameof(OrderMessageProcessorRegistryJson)} successfully processed {message.OrderId}");
+        logger.LogInformation($"{nameof(OrderMessageHandlerJson)} successfully processed {message.OrderId}");
     }
 }
 

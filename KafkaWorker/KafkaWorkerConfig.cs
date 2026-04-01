@@ -14,14 +14,14 @@ public record KafkaWorkerConfig
     /// <summary>
     /// The Kafka consumer group ID. All instances sharing the same group ID coordinate to split partitions.
     /// </summary>
-    /// <example><c>"commerce-order-processor"</c></example>
+    /// <example><c>"xyz-order-processor"</c></example>
     [Required]
     public required string GroupId { get; init; }
 
     /// <summary>
     /// The Kafka topic to consume messages from.
     /// </summary>
-    /// <example><c>"commerce.orders.v1"</c></example>
+    /// <example><c>"xyz.orders.v1"</c></example>
     [Required]
     public required string Topic { get; init; }
 
@@ -42,7 +42,7 @@ public record KafkaWorkerConfig
     /// The DLQ topic where failed messages are published after all retries are exhausted.
     /// Leave <c>null</c> to disable DLQ publishing (failed messages are logged and skipped).
     /// </summary>
-    /// <example><c>"commerce.orders.v1.dlq"</c></example>
+    /// <example><c>"xyz.orders.v1.dlq"</c></example>
     public string? DeadLetterTopic { get; init; }
 
     /// <summary>

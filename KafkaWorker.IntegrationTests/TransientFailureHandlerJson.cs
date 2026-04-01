@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 namespace KafkaWorker.IntegrationTests;
 
 /// <summary>
-/// Controls how many times the processor should throw a transient (non-invalid-message) exception
+/// Controls how many times the handler should throw a transient (non-invalid-message) exception
 /// before succeeding. Used by integration tests to exercise the DLQ round-trip flow.
 /// </summary>
 public class TransientFailureState
@@ -12,7 +12,7 @@ public class TransientFailureState
     private int _callCount;
 
     /// <summary>
-    /// Number of calls that should throw before the processor starts succeeding.
+    /// Number of calls that should throw before the handler starts succeeding.
     /// Set to <see cref="int.MaxValue"/> for "always fail" behavior.
     /// </summary>
     public required int FailCount { get; init; }
@@ -21,12 +21,12 @@ public class TransientFailureState
 }
 
 /// <summary>
-/// A test-only processor that throws a transient (non-invalid-message) exception for the first N calls,
+/// A test-only handler that throws a transient (non-invalid-message) exception for the first N calls,
 /// then succeeds. Used to exercise the full DLQ round-trip flow in integration tests.
 /// </summary>
-public sealed class TransientFailureProcessorJson(
+public sealed class TransientFailureHandlerJson(
     TransientFailureState state,
-    ILogger<TransientFailureProcessorJson> logger) : IMessageHandler<OrderMessage>
+    ILogger<TransientFailureHandlerJson> logger) : IMessageHandler<OrderMessage>
 {
     public Task HandleMessageAsync(OrderMessage message, CancellationToken stoppingToken)
     {

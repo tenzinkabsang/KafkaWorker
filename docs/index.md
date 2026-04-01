@@ -74,14 +74,14 @@ public record OrderMessage
 }
 ```
 
-### 3. Implement the message processor
+### 3. Implement the message handler
 
 This is the **only class you need to write**. The library handles everything else.
 
 ```csharp
-public class OrderMessageProcessor(
+public class OrderMessageHandler(
     IOrderService orderService,
-    ILogger<OrderMessageProcessor> logger) : IMessageHandler<OrderMessage>
+    ILogger<OrderMessageHandler> logger) : IMessageHandler<OrderMessage>
 {
     public async Task HandleMessageAsync(OrderMessage message, CancellationToken stoppingToken)
     {
@@ -103,7 +103,7 @@ public class OrderMessageProcessor(
 ```csharp
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Services.AddKafkaWorker<OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(builder.Configuration);
 
 // Optional: enable DLQ reprocessing (requires DeadLetterTopic in config)
 // builder.Services.AddKafkaWorkerDeadLetter<OrderMessage>(builder.Configuration);

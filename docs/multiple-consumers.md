@@ -25,11 +25,11 @@ Each consumer needs a distinct `TMessage` type and its own config section:
 ```csharp
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Services.AddKafkaWorker<OrderMessage, OrderMessageProcessor>(
+builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(
     builder.Configuration,
     configSection: "KafkaWorker:OrderConsumer");
 
-builder.Services.AddKafkaWorker<PaymentMessage, PaymentMessageProcessor>(
+builder.Services.AddKafkaWorker<PaymentMessage, PaymentMessageHandler>(
     builder.Configuration,
     configSection: "KafkaWorker:PaymentConsumer");
 
@@ -96,17 +96,17 @@ You can mix serialization formats in the same host:
 
 ```csharp
 // Plain JSON consumer
-builder.Services.AddKafkaWorker<OrderMessage, OrderProcessor>(
+builder.Services.AddKafkaWorker<OrderMessage, OrderHandler>(
     builder.Configuration,
     configSection: "KafkaWorker:OrderConsumer");
 
 // Avro consumer
-builder.Services.AddKafkaWorkerAvro<InventoryEvent, InventoryProcessor>(
+builder.Services.AddKafkaWorkerAvro<InventoryEvent, InventoryHandler>(
     builder.Configuration,
     configSection: "KafkaWorker:InventoryConsumer");
 
 // Protobuf consumer
-builder.Services.AddKafkaWorkerProtobuf<ShipmentEvent, ShipmentProcessor>(
+builder.Services.AddKafkaWorkerProtobuf<ShipmentEvent, ShipmentHandler>(
     builder.Configuration,
     configSection: "KafkaWorker:ShipmentConsumer");
 ```

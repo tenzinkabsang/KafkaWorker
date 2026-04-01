@@ -39,7 +39,7 @@ public class ProtobufConsumerTests(ITestOutputHelper testOutputHelper)
         using var cts = new CancellationTokenSource(TestLoggerProvider.WaitTime);
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
-            services.AddKafkaWorkerProtobuf<ProtobufOrderMessage, OrderMessageProcessorProto>(context.Configuration);
+            services.AddKafkaWorkerProtobuf<ProtobufOrderMessage, OrderMessageHandlerProto>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<ProtobufOrderMessage>(context.Configuration);
         });
 
@@ -88,7 +88,7 @@ public class ProtobufConsumerTests(ITestOutputHelper testOutputHelper)
         using var cts = new CancellationTokenSource(TestLoggerProvider.WaitTime);
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
-            services.AddKafkaWorkerProtobuf<ProtobufOrderMessage, OrderMessageProcessorProto>(context.Configuration);
+            services.AddKafkaWorkerProtobuf<ProtobufOrderMessage, OrderMessageHandlerProto>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<ProtobufOrderMessage>(context.Configuration);
         });
 
@@ -138,7 +138,7 @@ public class ProtobufConsumerTests(ITestOutputHelper testOutputHelper)
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
             services.AddSingleton<TimeProvider>(fakeTime);
-            services.AddKafkaWorkerProtobuf<ProtobufOrderMessage, OrderMessageProcessorProto>(context.Configuration);
+            services.AddKafkaWorkerProtobuf<ProtobufOrderMessage, OrderMessageHandlerProto>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<ProtobufOrderMessage>(context.Configuration);
         });
 

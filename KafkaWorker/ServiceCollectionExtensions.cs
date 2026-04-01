@@ -19,7 +19,7 @@ public static class ServiceCollectionExtensions
     /// Registers a hosted Kafka consumer that deserializes messages using plain JSON (System.Text.Json) without Schema Registry.
     /// </summary>
     /// <typeparam name="TMessage">The message type to consume. Must be deserializable by <see cref="System.Text.Json.JsonSerializer"/>.</typeparam>
-    /// <typeparam name="TProcessor">The message processor implementation type. Registered as a scoped service.</typeparam>
+    /// <typeparam name="THandler">The message handler implementation type. Registered as a scoped service.</typeparam>
     /// <param name="services">The service collection to add services to.</param>
     /// <param name="configuration">The application configuration containing Kafka settings.</param>
     /// <param name="configSection">The configuration section path for consumer settings. Defaults to <c>KafkaWorker:Consumer</c>.</param>
@@ -40,26 +40,26 @@ public static class ServiceCollectionExtensions
     /// </list>
     /// </para>
     /// </remarks>
-    public static IServiceCollection AddKafkaWorker<TMessage, TProcessor>(
+    public static IServiceCollection AddKafkaWorker<TMessage, THandler>(
         this IServiceCollection services,
         IConfiguration configuration,
         string configSection = KafkaWorkerConfig.Section,
         Action<ConsumerConfig>? configureConsumer = null)
       where TMessage : class
-      where TProcessor : class, IMessageHandler<TMessage>
-        => AddKafkaWorker<string, TMessage, TProcessor>(services, configuration, configSection, configureConsumer);
+      where THandler : class, IMessageHandler<TMessage>
+        => AddKafkaWorker<string, TMessage, THandler>(services, configuration, configSection, configureConsumer);
 
-    /// <inheritdoc cref="AddKafkaWorker{TMessage, TProcessor}"/>
+    /// <inheritdoc cref="AddKafkaWorker{TMessage, THandler}"/>
     /// <typeparam name="TKey">The message key type.</typeparam>
     /// <typeparam name="TMessage">The message type to consume.</typeparam>
-    /// <typeparam name="TProcessor">The message processor implementation type.</typeparam>
-    public static IServiceCollection AddKafkaWorker<TKey, TMessage, TProcessor>(
+    /// <typeparam name="THandler">The message handler implementation type.</typeparam>
+    public static IServiceCollection AddKafkaWorker<TKey, TMessage, THandler>(
         this IServiceCollection services,
         IConfiguration configuration,
         string configSection = KafkaWorkerConfig.Section,
         Action<ConsumerConfig>? configureConsumer = null)
       where TMessage : class
-      where TProcessor : class, IMessageHandler<TMessage>
+      where THandler : class, IMessageHandler<TMessage>
     {
         services.TryAddSingleton<IDeserializer<TMessage>>(sp => new JsonStringDeserializer<TMessage>());
 
@@ -68,7 +68,7 @@ public static class ServiceCollectionExtensions
             b.SetValueSerializer(new JsonStringSerializer<TMessage>());
         });
 
-        return RegisterHostedConsumer<TKey, TMessage, TProcessor>(services, configuration, configSection, configureConsumer, b =>
+        return RegisterHostedConsumer<TKey, TMessage, THandler>(services, configuration, configSection, configureConsumer, b =>
         {
             b.SetValueDeserializer(new JsonStringDeserializer<TMessage>());
         });
@@ -139,16 +139,16 @@ public static class ServiceCollectionExtensions
 
     /// <summary>
     /// Core registration method that configures a Kafka consumer with the specified deserializer.
-    /// Registers <typeparamref name="TProcessor"/> as a scoped <see cref="IMessageHandler{TMessage}"/>.
+    /// Registers <typeparamref name="THandler"/> as a scoped <see cref="IMessageHandler{TMessage}"/>.
     /// </summary>
-    internal static IServiceCollection RegisterHostedConsumer<TKey, TMessage, TProcessor>(
+    internal static IServiceCollection RegisterHostedConsumer<TKey, TMessage, THandler>(
         IServiceCollection services,
         IConfiguration configuration,
         string configSection,
         Action<ConsumerConfig>? configureConsumer,
         Action<ConsumerBuilder<TKey, TMessage>> deserializerConfig)
         where TMessage : class
-        where TProcessor : class, IMessageHandler<TMessage>
+        where THandler : class, IMessageHandler<TMessage>
     {
         if (services.Any(sd => sd.ServiceType == typeof(IHostedService) && sd.ImplementationType == typeof(Consumer<TKey, TMessage>)))
         {
@@ -157,7 +157,7 @@ public static class ServiceCollectionExtensions
                 "Use a distinct message type per consumer, or use different key types.");
         }
 
-        services.AddScoped<IMessageHandler<TMessage>, TProcessor>();
+        services.AddScoped<IMessageHandler<TMessage>, THandler>();
         services.TryAddSingleton<KafkaWorkerMetrics>();
 
         services

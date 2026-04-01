@@ -10,7 +10,7 @@ using Polly.Retry;
 namespace KafkaWorker;
 
 /// <summary>
-/// Consumes messages from a specified Kafka topic, processes them using a provided message processor, and handles
+/// Consumes messages from a specified Kafka topic, processes them using a provided message handler, and handles
 /// failures with configurable retry and dead letter queue support.
 /// </summary>
 /// <remarks>The consumer automatically retries failed message processing up to a configurable maximum number of
@@ -96,8 +96,8 @@ internal sealed partial class Consumer<TKey, TMessage>(
                 {
                     LogProcessingMessage(logger, consumerResult.Message.Key);
                     using var scope = serviceScopeFactory.CreateScope();
-                    var processor = scope.ServiceProvider.GetRequiredService<IMessageHandler<TMessage>>();
-                    await processor.HandleMessageAsync(consumerResult.Message.Value, token);
+                    var handler = scope.ServiceProvider.GetRequiredService<IMessageHandler<TMessage>>();
+                    await handler.HandleMessageAsync(consumerResult.Message.Value, token);
                 },
                 stoppingToken);
 

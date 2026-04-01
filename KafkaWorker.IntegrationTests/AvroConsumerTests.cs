@@ -39,7 +39,7 @@ public class AvroConsumerTests(ITestOutputHelper testOutputHelper)
         using var cts = new CancellationTokenSource(TestLoggerProvider.WaitTime);
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
-            services.AddKafkaWorkerAvro<AvroOrderMessage, OrderMessageProcessorAvro>(context.Configuration);
+            services.AddKafkaWorkerAvro<AvroOrderMessage, OrderMessageHandlerAvro>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<AvroOrderMessage>(context.Configuration);
         });
 
@@ -88,7 +88,7 @@ public class AvroConsumerTests(ITestOutputHelper testOutputHelper)
         using var cts = new CancellationTokenSource(TestLoggerProvider.WaitTime);
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
-            services.AddKafkaWorkerAvro<AvroOrderMessage, OrderMessageProcessorAvro>(context.Configuration);
+            services.AddKafkaWorkerAvro<AvroOrderMessage, OrderMessageHandlerAvro>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<AvroOrderMessage>(context.Configuration);
         });
 
@@ -139,7 +139,7 @@ public class AvroConsumerTests(ITestOutputHelper testOutputHelper)
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
             services.AddSingleton<TimeProvider>(fakeTime);
-            services.AddKafkaWorkerAvro<AvroOrderMessage, OrderMessageProcessorAvro>(context.Configuration);
+            services.AddKafkaWorkerAvro<AvroOrderMessage, OrderMessageHandlerAvro>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<AvroOrderMessage>(context.Configuration);
         });
 

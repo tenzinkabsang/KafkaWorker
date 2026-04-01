@@ -123,7 +123,7 @@ When `IsSecuredCluster` is `true`, the library configures SASL/SSL automatically
 All registration methods accept an optional `Action<ConsumerConfig>` callback to customize the underlying Confluent consumer configuration:
 
 ```csharp
-builder.Services.AddKafkaWorker<OrderMessage, OrderMessageProcessor>(
+builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(
     builder.Configuration,
     configureConsumer: config =>
     {

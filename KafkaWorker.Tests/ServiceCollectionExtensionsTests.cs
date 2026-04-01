@@ -27,17 +27,17 @@ public class ServiceCollectionExtensionsTests
         public string Data { get; set; } = string.Empty;
     }
 
-    public class ProcessorA : IMessageHandler<MessageA>
+    public class HandlerA : IMessageHandler<MessageA>
     {
         public Task HandleMessageAsync(MessageA message, CancellationToken stoppingToken) => Task.CompletedTask;
     }
 
-    public class ProcessorB : IMessageHandler<MessageB>
+    public class HandlerB : IMessageHandler<MessageB>
     {
         public Task HandleMessageAsync(MessageB message, CancellationToken stoppingToken) => Task.CompletedTask;
     }
 
-    public class AltProcessorA : IMessageHandler<MessageA>
+    public class AltHandlerA : IMessageHandler<MessageA>
     {
         public Task HandleMessageAsync(MessageA message, CancellationToken stoppingToken) => Task.CompletedTask;
     }
@@ -48,10 +48,10 @@ public class ServiceCollectionExtensionsTests
         var services = new ServiceCollection();
         var config = CreateConfiguration();
 
-        services.AddKafkaWorker<MessageA, ProcessorA>(config);
+        services.AddKafkaWorker<MessageA, HandlerA>(config);
 
         var ex = Assert.Throws<InvalidOperationException>(
-            () => services.AddKafkaWorker<MessageA, AltProcessorA>(config));
+            () => services.AddKafkaWorker<MessageA, AltHandlerA>(config));
 
         Assert.Contains("MessageA", ex.Message);
         Assert.Contains("already registered", ex.Message);
@@ -72,10 +72,10 @@ public class ServiceCollectionExtensionsTests
             })
             .Build();
 
-        services.AddKafkaWorker<MessageA, ProcessorA>(config, configSection: "KafkaWorker:ConsumerA");
+        services.AddKafkaWorker<MessageA, HandlerA>(config, configSection: "KafkaWorker:ConsumerA");
 
         var exception = Record.Exception(
-            () => { services.AddKafkaWorker<MessageB, ProcessorB>(config, configSection: "KafkaWorker:ConsumerB"); });
+            () => { services.AddKafkaWorker<MessageB, HandlerB>(config, configSection: "KafkaWorker:ConsumerB"); });
 
         Assert.Null(exception);
     }

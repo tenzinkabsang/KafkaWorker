@@ -40,7 +40,7 @@ dotnet add package KafkaWorker
 ```
 
 ```csharp
-builder.Services.AddKafkaWorker<OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(builder.Configuration);
 ```
 
 ---
@@ -54,7 +54,7 @@ dotnet add package KafkaWorker.Avro
 ```
 
 ```csharp
-builder.Services.AddKafkaWorkerAvro<OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorkerAvro<OrderMessage, OrderMessageHandler>(builder.Configuration);
 ```
 
 Requires `SchemaRegistryUrls` in the connection config:
@@ -81,7 +81,7 @@ dotnet add package KafkaWorker.Protobuf
 ```
 
 ```csharp
-builder.Services.AddKafkaWorkerProtobuf<OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorkerProtobuf<OrderMessage, OrderMessageHandler>(builder.Configuration);
 ```
 
 ---
@@ -95,7 +95,7 @@ dotnet add package KafkaWorker.JsonSchema
 ```
 
 ```csharp
-builder.Services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageHandler>(builder.Configuration);
 ```
 
 ---
@@ -106,13 +106,13 @@ All registration methods have a 3-type-parameter overload for custom key types:
 
 ```csharp
 // Plain JSON with Guid keys
-builder.Services.AddKafkaWorker<Guid, OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorker<Guid, OrderMessage, OrderMessageHandler>(builder.Configuration);
 
 // Avro with string keys (explicit)
-builder.Services.AddKafkaWorkerAvro<string, OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorkerAvro<string, OrderMessage, OrderMessageHandler>(builder.Configuration);
 ```
 
-When using the 2-type-parameter overload (`<TMessage, TProcessor>`), the key type defaults to `string`.
+When using the 2-type-parameter overload (`<TMessage, THandler>`), the key type defaults to `string`.
 
 ---
 

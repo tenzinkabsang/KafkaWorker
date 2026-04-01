@@ -1,13 +1,13 @@
-using KafkaWorker.Proto;
+using KafkaWorker.Sample;
 
 namespace KafkaWorker.Worker;
 
-public sealed class OrderMessageProcessorProto(ILogger<OrderMessageProcessorProto> logger) : IMessageHandler<ProtobufOrderMessage>
+public sealed class OrderMessageHandlerAvro(ILogger<OrderMessageHandlerAvro> logger) : IMessageHandler<AvroOrderMessage>
 {
     // In-memory storage for processed orders (for demonstration purposes)
-    private readonly IList<ProtobufOrderMessage> _orders = [];
+    private readonly IList<AvroOrderMessage> _orders = [];
 
-    public async Task HandleMessageAsync(ProtobufOrderMessage message, CancellationToken stoppingToken)
+    public async Task HandleMessageAsync(AvroOrderMessage message, CancellationToken stoppingToken)
     {
         // Simulate invalid message detection
         if (string.IsNullOrEmpty(message.SellerId))
@@ -17,7 +17,7 @@ public sealed class OrderMessageProcessorProto(ILogger<OrderMessageProcessorProt
 
         _orders.Add(message);
 
-        logger.LogInformation($"{nameof(OrderMessageProcessorProto)} successfully processed {message.OrderId}");
+        logger.LogInformation($"{nameof(OrderMessageHandlerAvro)} successfully processed {message.OrderId}");
     }
 }
 

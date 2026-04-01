@@ -1,14 +1,14 @@
 namespace KafkaWorker;
 
 /// <summary>
-/// Implement this interface to define how messages from your Kafka topic are processed.
+/// Implement this interface to define how messages from your Kafka topic are handled.
 /// The library handles consuming, retrying, offset commits, and dead letter queue routing —
 /// you only write the business logic.
 /// </summary>
 /// <typeparam name="TMessage">The deserialized message type from your Kafka topic.</typeparam>
 /// <remarks>
 /// <para>
-/// The processor is registered as a <b>scoped</b> service by the library's extension methods.
+/// The handler is registered as a <b>scoped</b> service by the library's extension methods.
 /// A new DI scope is created for each message, so scoped dependencies (e.g., EF Core <c>DbContext</c>)
 /// can be injected directly via the constructor.
 /// </para>
@@ -23,7 +23,7 @@ namespace KafkaWorker;
 /// </remarks>
 /// <example>
 /// <code>
-/// public class OrderMessageProcessor(IOrderService orderService) : IMessageHandler&lt;OrderMessage&gt;
+/// public class OrderMessageHandler(IOrderService orderService) : IMessageHandler&lt;OrderMessage&gt;
 /// {
 ///     public async Task HandleMessageAsync(OrderMessage message, CancellationToken stoppingToken)
 ///     {
@@ -38,7 +38,7 @@ namespace KafkaWorker;
 public interface IMessageHandler<TMessage> where TMessage : class
 {
     /// <summary>
-    /// Processes a single Kafka message. The library calls this for each consumed message.
+    /// Handles a single Kafka message. The library calls this for each consumed message.
     /// </summary>
     /// <param name="message">The deserialized message value from Kafka. Never null.</param>
     /// <param name="stoppingToken">

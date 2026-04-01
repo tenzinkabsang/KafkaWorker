@@ -38,7 +38,7 @@ public class RegistryJsonConsumerTests(ITestOutputHelper testOutputHelper)
         using var cts = new CancellationTokenSource(TestLoggerProvider.WaitTime);
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
-            services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageProcessorRegistryJson>(context.Configuration);
+            services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageHandlerRegistryJson>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<OrderMessage>(context.Configuration);
         });
 
@@ -87,7 +87,7 @@ public class RegistryJsonConsumerTests(ITestOutputHelper testOutputHelper)
         using var cts = new CancellationTokenSource(TestLoggerProvider.WaitTime);
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
-            services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageProcessorRegistryJson>(context.Configuration);
+            services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageHandlerRegistryJson>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<OrderMessage>(context.Configuration);
         });
 
@@ -138,7 +138,7 @@ public class RegistryJsonConsumerTests(ITestOutputHelper testOutputHelper)
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
             services.AddSingleton<TimeProvider>(fakeTime);
-            services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageProcessorRegistryJson>(context.Configuration);
+            services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageHandlerRegistryJson>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<OrderMessage>(context.Configuration);
         });
 

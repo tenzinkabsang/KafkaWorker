@@ -15,11 +15,11 @@ dotnet add package KafkaWorker.JsonSchema
 
 ```csharp
 // Program.cs
-builder.Services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageHandler>(builder.Configuration);
 ```
 
 ```csharp
-public class OrderMessageProcessor(ILogger<OrderMessageProcessor> logger)
+public class OrderMessageHandler(ILogger<OrderMessageHandler> logger)
     : IMessageHandler<OrderMessage>
 {
     public Task HandleMessageAsync(OrderMessage message, CancellationToken stoppingToken)
@@ -50,7 +50,7 @@ public class OrderMessageProcessor(ILogger<OrderMessageProcessor> logger)
 ## Custom Key Type
 
 ```csharp
-builder.Services.AddKafkaWorkerRegistryJson<long, OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorkerRegistryJson<long, OrderMessage, OrderMessageHandler>(builder.Configuration);
 ```
 
 ## Documentation

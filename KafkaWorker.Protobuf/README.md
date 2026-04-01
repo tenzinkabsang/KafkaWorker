@@ -13,11 +13,11 @@ dotnet add package KafkaWorker.Protobuf
 
 ```csharp
 // Program.cs
-builder.Services.AddKafkaWorkerProtobuf<OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorkerProtobuf<OrderMessage, OrderMessageHandler>(builder.Configuration);
 ```
 
 ```csharp
-public class OrderMessageProcessor(ILogger<OrderMessageProcessor> logger)
+public class OrderMessageHandler(ILogger<OrderMessageHandler> logger)
     : IMessageHandler<OrderMessage>
 {
     public Task HandleMessageAsync(OrderMessage message, CancellationToken stoppingToken)
@@ -50,7 +50,7 @@ public class OrderMessageProcessor(ILogger<OrderMessageProcessor> logger)
 ## Custom Key Type
 
 ```csharp
-builder.Services.AddKafkaWorkerProtobuf<long, OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorkerProtobuf<long, OrderMessage, OrderMessageHandler>(builder.Configuration);
 ```
 
 ## Documentation

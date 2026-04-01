@@ -64,14 +64,14 @@ public record OrderMessage
 }
 ```
 
-### 3. Implement the message processor
+### 3. Implement the message handler
 
 This is the **only class you need to write**. The library handles everything else.
 
 ```csharp
-public class OrderMessageProcessor(
+public class OrderMessageHandler(
     IOrderService orderService,
-    ILogger<OrderMessageProcessor> logger) : IMessageHandler<OrderMessage>
+    ILogger<OrderMessageHandler> logger) : IMessageHandler<OrderMessage>
 {
     public async Task HandleMessageAsync(OrderMessage message, CancellationToken stoppingToken)
     {
@@ -93,7 +93,7 @@ public class OrderMessageProcessor(
 ```csharp
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Services.AddKafkaWorker<OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(builder.Configuration);
 
 // Optional: enable DLQ reprocessing (requires DeadLetterTopic in config)
 // builder.Services.AddKafkaWorkerDeadLetter<OrderMessage>(builder.Configuration);
@@ -148,7 +148,7 @@ Or set `MaxRetries` to `0` and omit `DeadLetterTopic` for a simple consumer with
 │  Message Flow                                                   │
 │                                                                 │
 │  Kafka Topic ──► Consumer ──► IMessageHandler                   │
-│                       │                    │                     │
+│                       │                    │                    │
 │                       │              ┌─────┴─────┐              │
 │                       │              │           │              │
 │                       │           Success    Exception          │
@@ -222,7 +222,7 @@ Example with a secured cluster and Schema Registry:
 
 ## Serialization Formats
 
-Choose the registration method that matches your message format. All methods default to `string` keys — use the `<TKey, TMessage, TProcessor>` overload if you need a custom key type.
+Choose the registration method that matches your message format. All methods default to `string` keys — use the `<TKey, TMessage, THandler>` overload if you need a custom key type.
 
 | Method | Package | Use Case |
 |--------|---------|----------|
@@ -233,7 +233,7 @@ Choose the registration method that matches your message format. All methods def
 
 Schema Registry formats require `SchemaRegistryUrls` in the connection config. The registry client is shared automatically when multiple formats are registered in the same host.
 
-## Testing Your Processor
+## Testing Your Handler
 
 Your `IMessageHandler<TMessage>` is a plain class — test it directly without any Kafka infrastructure:
 
@@ -242,12 +242,12 @@ Your `IMessageHandler<TMessage>` is a plain class — test it directly without a
 public async Task HandleMessageAsync_ValidOrder_Succeeds()
 {
     var orderService = Substitute.For<IOrderService>();
-    var logger = Substitute.For<ILogger<OrderMessageProcessor>>();
-    var processor = new OrderMessageProcessor(orderService, logger);
+    var logger = Substitute.For<ILogger<OrderMessageHandler>>();
+    var handler = new OrderMessageHandler(orderService, logger);
 
     var message = new OrderMessage { OrderId = "123", CustomerId = "C1", Total = 99.99m };
 
-    await processor.HandleMessageAsync(message, CancellationToken.None);
+    await handler.HandleMessageAsync(message, CancellationToken.None);
 
     await orderService.Received(1).ProcessAsync(message, Arg.Any<CancellationToken>());
 }
@@ -255,14 +255,14 @@ public async Task HandleMessageAsync_ValidOrder_Succeeds()
 [Fact]
 public async Task HandleMessageAsync_MissingOrderId_ThrowsInvalidMessageException()
 {
-    var processor = new OrderMessageProcessor(
+    var handler = new OrderMessageHandler(
         Substitute.For<IOrderService>(),
-        Substitute.For<ILogger<OrderMessageProcessor>>());
+        Substitute.For<ILogger<OrderMessageHandler>>());
 
     var message = new OrderMessage { OrderId = "", CustomerId = "C1", Total = 0m };
 
     await Assert.ThrowsAsync<InvalidMessageException>(
-        () => processor.HandleMessageAsync(message, CancellationToken.None));
+        () => handler.HandleMessageAsync(message, CancellationToken.None));
 }
 ```
 
@@ -273,11 +273,11 @@ Run multiple consumers in a single host by pointing each registration to a diffe
 ```csharp
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Services.AddKafkaWorker<OrderMessage, OrderMessageProcessor>(
+builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(
     builder.Configuration,
     configSection: "KafkaWorker:OrderConsumer");
 
-builder.Services.AddKafkaWorker<PaymentMessage, PaymentMessageProcessor>(
+builder.Services.AddKafkaWorker<PaymentMessage, PaymentMessageHandler>(
     builder.Configuration,
     configSection: "KafkaWorker:PaymentConsumer");
 
@@ -321,7 +321,7 @@ Each `TMessage` type can only be registered once per host. Calling `AddKafkaWork
 All registration methods accept an optional `Action<ConsumerConfig>` callback to customize the underlying Confluent consumer configuration:
 
 ```csharp
-builder.Services.AddKafkaWorker<OrderMessage, OrderMessageProcessor>(
+builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(
     builder.Configuration,
     configureConsumer: config =>
     {

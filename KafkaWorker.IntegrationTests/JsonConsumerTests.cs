@@ -38,7 +38,7 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
 
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
-            services.AddKafkaWorker<OrderMessage, OrderMessageProcessorJson>(context.Configuration);
+            services.AddKafkaWorker<OrderMessage, OrderMessageHandlerJson>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<OrderMessage>(context.Configuration);
         });
 
@@ -89,7 +89,7 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         using var cts = new CancellationTokenSource(TestLoggerProvider.WaitTime);
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
-            services.AddKafkaWorker<OrderMessage, OrderMessageProcessorJson>(context.Configuration);
+            services.AddKafkaWorker<OrderMessage, OrderMessageHandlerJson>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<OrderMessage>(context.Configuration);
         });
 
@@ -142,7 +142,7 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
             services.AddSingleton<TimeProvider>(fakeTime);
-            services.AddKafkaWorker<OrderMessage, OrderMessageProcessorJson>(context.Configuration);
+            services.AddKafkaWorker<OrderMessage, OrderMessageHandlerJson>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<OrderMessage>(context.Configuration);
         });
 
@@ -213,7 +213,7 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         {
             services.AddSingleton(failureState);
             services.AddSingleton<TimeProvider>(fakeTime);
-            services.AddKafkaWorker<OrderMessage, TransientFailureProcessorJson>(context.Configuration);
+            services.AddKafkaWorker<OrderMessage, TransientFailureHandlerJson>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<OrderMessage>(context.Configuration);
         });
 
@@ -287,7 +287,7 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         {
             services.AddSingleton(failureState);
             services.AddSingleton<TimeProvider>(fakeTime);
-            services.AddKafkaWorker<OrderMessage, TransientFailureProcessorJson>(context.Configuration);
+            services.AddKafkaWorker<OrderMessage, TransientFailureHandlerJson>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<OrderMessage>(context.Configuration);
         });
 

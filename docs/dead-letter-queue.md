@@ -70,7 +70,7 @@ With this configuration, failed messages are published to the DLQ but **not** au
 ```csharp
 var builder = Host.CreateApplicationBuilder(args);
 
-builder.Services.AddKafkaWorker<OrderMessage, OrderMessageProcessor>(builder.Configuration);
+builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(builder.Configuration);
 builder.Services.AddKafkaWorkerDeadLetter<OrderMessage>(builder.Configuration);
 
 builder.Build().Run();

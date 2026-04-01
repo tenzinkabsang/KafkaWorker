@@ -18,7 +18,7 @@ Deeper details on error handling, DI scoping, testing, and deployment behavior.
 
 ---
 
-## Testing Your Processor
+## Testing Your Handler
 
 Your `IMessageHandler<TMessage>` is a plain class — test it directly without any Kafka infrastructure:
 
@@ -27,12 +27,12 @@ Your `IMessageHandler<TMessage>` is a plain class — test it directly without a
 public async Task HandleMessageAsync_ValidOrder_Succeeds()
 {
     var orderService = Substitute.For<IOrderService>();
-    var logger = Substitute.For<ILogger<OrderMessageProcessor>>();
-    var processor = new OrderMessageProcessor(orderService, logger);
+    var logger = Substitute.For<ILogger<OrderMessageHandler>>();
+    var handler = new OrderMessageHandler(orderService, logger);
 
     var message = new OrderMessage { OrderId = "123", CustomerId = "C1", Total = 99.99m };
 
-    await processor.HandleMessageAsync(message, CancellationToken.None);
+    await handler.HandleMessageAsync(message, CancellationToken.None);
 
     await orderService.Received(1).ProcessAsync(message, Arg.Any<CancellationToken>());
 }
@@ -40,14 +40,14 @@ public async Task HandleMessageAsync_ValidOrder_Succeeds()
 [Fact]
 public async Task HandleMessageAsync_MissingOrderId_ThrowsInvalidMessageException()
 {
-    var processor = new OrderMessageProcessor(
+    var handler = new OrderMessageHandler(
         Substitute.For<IOrderService>(),
-        Substitute.For<ILogger<OrderMessageProcessor>>());
+        Substitute.For<ILogger<OrderMessageHandler>>());
 
     var message = new OrderMessage { OrderId = "", CustomerId = "C1", Total = 0m };
 
     await Assert.ThrowsAsync<InvalidMessageException>(
-        () => processor.HandleMessageAsync(message, CancellationToken.None));
+        () => handler.HandleMessageAsync(message, CancellationToken.None));
 }
 ```
 
@@ -58,9 +58,9 @@ public async Task HandleMessageAsync_MissingOrderId_ThrowsInvalidMessageExceptio
 The library creates a new DI scope for each message. This means scoped dependencies like EF Core `DbContext` work naturally via constructor injection:
 
 ```csharp
-public class OrderMessageProcessor(
+public class OrderMessageHandler(
     AppDbContext dbContext,  // scoped — fresh instance per message
-    ILogger<OrderMessageProcessor> logger) : IMessageHandler<OrderMessage>
+    ILogger<OrderMessageHandler> logger) : IMessageHandler<OrderMessage>
 {
     public async Task HandleMessageAsync(OrderMessage message, CancellationToken stoppingToken)
     {
@@ -93,7 +93,7 @@ Retries use **exponential backoff with jitter** (via Polly):
 
 ## Backpressure
 
-The consume loop processes messages sequentially — one at a time. Kafka won't outpace your processor because the next `Consume()` call doesn't happen until the current message is fully processed (including retries and DLQ publish if needed).
+The consume loop processes messages sequentially — one at a time. Kafka won't outpace your handler because the next `Consume()` call doesn't happen until the current message is fully processed (including retries and DLQ publish if needed).
 
 If you need to throttle calls to a downstream system, add rate limiting inside your `HandleMessageAsync` implementation.
 

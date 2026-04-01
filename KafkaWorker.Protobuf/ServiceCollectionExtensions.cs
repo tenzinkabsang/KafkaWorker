@@ -17,30 +17,30 @@ public static class ServiceCollectionExtensions
     /// Registers a hosted Kafka consumer that deserializes messages using Protobuf format with Schema Registry.
     /// </summary>
     /// <typeparam name="TMessage">The Protobuf-generated message type to consume. Must implement <see cref="Google.Protobuf.IMessage{T}"/>.</typeparam>
-    /// <typeparam name="TProcessor">The message processor implementation type. Registered as a scoped service.</typeparam>
+    /// <typeparam name="THandler">The message handler implementation type. Registered as a scoped service.</typeparam>
     /// <param name="services">The service collection to add services to.</param>
     /// <param name="configuration">The application configuration containing Kafka settings.</param>
     /// <param name="configSection">The configuration section path for consumer settings. Defaults to <c>KafkaWorker:Consumer</c>.</param>
     /// <param name="configureConsumer">Optional callback to configure the underlying Confluent <see cref="ConsumerConfig"/>.</param>
     /// <returns>The service collection for chaining.</returns>
-    public static IServiceCollection AddKafkaWorkerProtobuf<TMessage, TProcessor>(
+    public static IServiceCollection AddKafkaWorkerProtobuf<TMessage, THandler>(
         this IServiceCollection services, IConfiguration configuration,
         string configSection = KafkaWorkerConfig.Section,
         Action<ConsumerConfig>? configureConsumer = null)
         where TMessage : class, Google.Protobuf.IMessage<TMessage>, new()
-        where TProcessor : class, IMessageHandler<TMessage>
-        => AddKafkaWorkerProtobuf<string, TMessage, TProcessor>(services, configuration, configSection, configureConsumer);
+        where THandler : class, IMessageHandler<TMessage>
+        => AddKafkaWorkerProtobuf<string, TMessage, THandler>(services, configuration, configSection, configureConsumer);
 
-    /// <inheritdoc cref="AddKafkaWorkerProtobuf{TMessage, TProcessor}"/>
+    /// <inheritdoc cref="AddKafkaWorkerProtobuf{TMessage, THandler}"/>
     /// <typeparam name="TKey">The message key type.</typeparam>
     /// <typeparam name="TMessage">The Protobuf-generated message type to consume.</typeparam>
-    /// <typeparam name="TProcessor">The message processor implementation type.</typeparam>
-    public static IServiceCollection AddKafkaWorkerProtobuf<TKey, TMessage, TProcessor>(
+    /// <typeparam name="THandler">The message handler implementation type.</typeparam>
+    public static IServiceCollection AddKafkaWorkerProtobuf<TKey, TMessage, THandler>(
         this IServiceCollection services, IConfiguration configuration,
         string configSection = KafkaWorkerConfig.Section,
         Action<ConsumerConfig>? configureConsumer = null)
         where TMessage : class, Google.Protobuf.IMessage<TMessage>, new()
-        where TProcessor : class, IMessageHandler<TMessage>
+        where THandler : class, IMessageHandler<TMessage>
     {
         var schemaRegistry = GetSchemaRegistry(services, configuration);
 
@@ -52,7 +52,7 @@ public static class ServiceCollectionExtensions
             b.SetValueSerializer(new ProtobufSerializer<TMessage>(schemaRegistry).AsSyncOverAsync());
         });
 
-        return KafkaWorker.ServiceCollectionExtensions.RegisterHostedConsumer<TKey, TMessage, TProcessor>(
+        return KafkaWorker.ServiceCollectionExtensions.RegisterHostedConsumer<TKey, TMessage, THandler>(
             services, configuration, configSection, configureConsumer, b =>
             {
                 b.SetValueDeserializer(new ProtobufDeserializer<TMessage>().AsSyncOverAsync());
