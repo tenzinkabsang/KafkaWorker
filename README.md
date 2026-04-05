@@ -1,6 +1,7 @@
 # KafkaWorker
 
 [![NuGet Version](https://img.shields.io/nuget/v/KafkaWorker.svg?style=flat)](https://www.nuget.org/packages/KafkaWorker/)
+[![NuGet Downloads](https://img.shields.io/nuget/dt/KafkaWorker.svg?style=flat)](https://www.nuget.org/packages/KafkaWorker/)
 [![CI](https://github.com/tenzinkabsang/KafkaWorker/actions/workflows/ci.yml/badge.svg)](https://github.com/tenzinkabsang/KafkaWorker/actions/workflows/ci.yml)
 
 A .NET library that abstracts Kafka consumer infrastructure so you can focus on business logic. Implement `IMessageHandler<TMessage>` and the library handles the consume loop, offset management, retry with exponential backoff, dead letter queuing, and DLQ reprocessing.
@@ -380,10 +381,6 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 - Publishing to DLQ with tracking headers (`original-topic`, `error-message`, `invalid-message`, `batch-id`, `reprocessed-attempt`)
 - DLQ reprocessing on a timer with loop detection
 - Configuration validation on startup
-
-## Failure & Restart Behavior
-
-Both consumers run as hosted services in the same .NET host. The default `BackgroundServiceExceptionBehavior` in .NET 8+ is `StopHost` — a fatal error from either consumer stops the host, and Kubernetes restarts the pod.
 
 ## Requirements
 
