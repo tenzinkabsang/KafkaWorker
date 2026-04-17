@@ -32,4 +32,7 @@ internal static class KafkaHeaderExtensions
 
     public static bool IsInvalidMessage(this Headers headers)
         => string.Equals(headers.GetValue(KafkaHeaders.InvalidMessage), "true", StringComparison.OrdinalIgnoreCase);
+
+    public static string? GetFailedConsumerGroupId(this Headers headers)
+        => headers.GetValue(KafkaHeaders.FailedConsumerGroupId);
 }

@@ -38,6 +38,7 @@ dotnet add package KafkaWorker.JsonSchema     # for JSON + Schema Registry
 - **Invalid message handling** — Skip retries for messages that will never succeed via `InvalidMessageException`
 - **Multiple serialization formats** — Avro, JSON (plain and with Schema Registry), and Protobuf via separate packages
 - **Multiple consumers per host** — Register several `AddKafkaWorker` calls with different `TMessage` types, each pointing to its own config section
+- **Multi-consumer group isolation** — When multiple services share a topic, DLQ-requeued messages are only reprocessed by the consumer group that failed — [details](https://tenzinkabsang.github.io/KafkaWorker/dead-letter-queue#multi-consumer-group-isolation)
 - **Confluent ConsumerConfig overrides** — Pass an `Action<ConsumerConfig>` callback to customize `AutoOffsetReset`, `SessionTimeoutMs`, and other Confluent settings
 - **Built-in observability** — Emits OpenTelemetry-compatible metrics (`System.Diagnostics.Metrics`) for messages processed, processing duration, and DLQ activity
 - **Configuration validation on startup** — Bad config fails fast before consuming any messages

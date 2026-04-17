@@ -38,6 +38,7 @@ When a message is sent to the DLQ, the library attaches tracking headers:
 | `invalid-message` | Set to `"true"` if the message was rejected via `InvalidMessageException` |
 | `batch-id` | UUID identifying the DLQ reprocessing batch (used for loop detection) |
 | `reprocessed-attempt` | Counter tracking how many times this message has been reprocessed from the DLQ |
+| `failed-consumer-group-id` | The consumer group that failed to process the message (used for [multi-consumer group isolation](#multi-consumer-group-isolation)) |
 
 ---
 
@@ -166,3 +167,34 @@ The main consumer's DLQ publishing is **best-effort**. If publishing to the DLQ 
 3. Continues processing the next message
 
 This design ensures the main consumer (processing millions of records) is never blocked by DLQ publish failures. The DLQ consumer has stricter guarantees — see [Error Handling](#error-handling) above.
+
+---
+
+## Multi-Consumer Group Isolation
+
+When multiple services (different `GroupId`s) subscribe to the same Kafka topic, a naive DLQ requeue would cause **all** of them to reprocess the message — even services that already processed it successfully.
+
+The library handles this automatically. No configuration is required.
+
+### How It Works
+
+1. When a consumer fails and sends a message to the DLQ, it stamps a `failed-consumer-group-id` header with its own `GroupId`
+2. When the DLQ consumer requeues the message back to the original topic, it forwards that header
+3. Other consumer groups that receive the requeued message see the header doesn't match their `GroupId` and skip it (commit offset, no processing)
+4. The consumer group that originally failed sees the header matches and reprocesses the message normally
+
+```
+Service A (group-a) ──┐                                       ┌── Service A: header matches → reprocess ✓
+                      ├── orders.v1 ── message fails in A ──► │
+Service B (group-b) ──┘         │                             └── Service B: header mismatch → skip ✓
+                                ▼
+                          orders.v1.dlq
+                                │
+                          DLQ consumer
+                                │
+                          orders.v1 (with failed-consumer-group-id: group-a)
+```
+
+### Backward Compatibility
+
+Messages without the `failed-consumer-group-id` header are processed normally by all consumer groups. This ensures existing messages in-flight during an upgrade are not affected.

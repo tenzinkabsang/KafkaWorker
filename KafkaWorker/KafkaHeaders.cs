@@ -31,4 +31,11 @@ internal static class KafkaHeaders
     /// The number of times this message has been reprocessed from the DLQ.
     /// </summary>
     public const string ReprocessedAttempt = "reprocessed-attempt";
+
+    /// <summary>
+    /// The consumer group ID that originally consumed the message before it was sent to the DLQ.
+    /// When present on a requeued message, only that consumer group should reprocess it;
+    /// other consumer groups should skip it to avoid duplicate processing.
+    /// </summary>
+    public const string FailedConsumerGroupId = "failed-consumer-group-id";
 }

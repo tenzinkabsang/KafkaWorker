@@ -191,6 +191,12 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
         headers.AddUtf8(KafkaHeaders.BatchId, batchId);
         headers.AddUtf8(KafkaHeaders.ReprocessedAttempt, (currentAttempt + 1).ToString());
 
+        var failedGroupId = consumeResult.Message.Headers.GetFailedConsumerGroupId();
+        if (!string.IsNullOrEmpty(failedGroupId))
+        {
+            headers.AddUtf8(KafkaHeaders.FailedConsumerGroupId, failedGroupId);
+        }
+
         return new Message<TKey, TMessage>
         {
             Key = consumeResult.Message.Key,

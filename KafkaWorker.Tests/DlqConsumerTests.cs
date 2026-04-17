@@ -77,7 +77,8 @@ public class DlqConsumerTests : IDisposable
         string? originalTopic = TestOriginalTopic,
         bool isInvalidMessage = false,
         int reprocessAttempt = 0,
-        string? batchId = null)
+        string? batchId = null,
+        string? failedConsumerGroupId = null)
     {
         var headers = new Headers();
 
@@ -99,6 +100,11 @@ public class DlqConsumerTests : IDisposable
         if (batchId != null)
         {
             headers.Add(KafkaHeaders.BatchId, Encoding.UTF8.GetBytes(batchId));
+        }
+
+        if (failedConsumerGroupId != null)
+        {
+            headers.Add(KafkaHeaders.FailedConsumerGroupId, Encoding.UTF8.GetBytes(failedConsumerGroupId));
         }
 
         return new ConsumeResult<string, TestMessage>
@@ -1098,6 +1104,42 @@ public class DlqConsumerTests : IDisposable
         _kafkaConsumer.Received(2).Close();
 
         await sut.StopAsync(CancellationToken.None);
+    }
+
+    #endregion
+
+    #region Consumer group isolation - header forwarding
+
+    [Fact]
+    public async Task ProcessBatch_WithFailedConsumerGroupId_ForwardsHeader()
+    {
+        var sut = CreateConsumer();
+        var dlqMessage = CreateDlqConsumeResult(failedConsumerGroupId: "order-processor");
+        SetupConsumeSequence(dlqMessage);
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        await _producer.Received(1).ProduceAsync(
+            TestOriginalTopic,
+            Arg.Is<Message<string, TestMessage>>(m =>
+                HasHeader(m.Headers, KafkaHeaders.FailedConsumerGroupId, "order-processor")),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_WithoutFailedConsumerGroupId_DoesNotAddHeader()
+    {
+        var sut = CreateConsumer();
+        var dlqMessage = CreateDlqConsumeResult();
+        SetupConsumeSequence(dlqMessage);
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        await _producer.Received(1).ProduceAsync(
+            TestOriginalTopic,
+            Arg.Is<Message<string, TestMessage>>(m =>
+                !m.Headers.Any(h => h.Key == KafkaHeaders.FailedConsumerGroupId)),
+            Arg.Any<CancellationToken>());
     }
 
     #endregion
