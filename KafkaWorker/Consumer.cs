@@ -62,15 +62,6 @@ internal sealed partial class Consumer<TKey, TMessage>(
                     continue;
                 }
 
-                var targetGroup = consumeResult.Message.Headers.GetFailedConsumerGroupId();
-                if (!string.IsNullOrEmpty(targetGroup) && targetGroup != _kafkaConfig.GroupId)
-                {
-                    LogSkippedGroupMismatch(logger, consumeResult.Message.Key, targetGroup);
-                    metrics.MessagesProcessed.Add(1, new KeyValuePair<string, object?>("topic", Topic), new KeyValuePair<string, object?>("status", "skipped"));
-                    CommitOffset(consumeResult);
-                    continue;
-                }
-
                 await ProcessMessageWithRetryAsync(consumeResult, stoppingToken);
 
                 CommitOffset(consumeResult);
@@ -159,40 +150,24 @@ internal sealed partial class Consumer<TKey, TMessage>(
 
         try
         {
-            var headers = new Headers();
-            headers.AddUtf8(KafkaHeaders.FailedConsumerGroupId, _kafkaConfig.GroupId);
-            headers.AddUtf8(KafkaHeaders.OriginalTopic, Topic);
-            headers.AddUtf8(KafkaHeaders.ErrorMessage, exception.Message);
+            var overrideHeaders = new Headers();
+            overrideHeaders.AddUtf8(KafkaHeaders.OriginalTopic, Topic);
+            overrideHeaders.AddUtf8(KafkaHeaders.ErrorMessage, exception.Message);
 
             if (isInvalidMessage)
             {
-                headers.AddUtf8(KafkaHeaders.InvalidMessage, "true");
+                overrideHeaders.AddUtf8(KafkaHeaders.InvalidMessage, "true");
             }
 
-            // Copy existing headers, this is important for DLQ processing
-            if (consumerResult.Message.Headers is not null)
-            {
-                foreach (var header in consumerResult.Message.Headers)
-                {
-                    if (header.Key == KafkaHeaders.FailedConsumerGroupId)
-                    {
-                        // We already added the FailedConsumerGroupId above.
-                        continue;
-                    }
-
-                    headers.Add(header.Key, header.GetValueBytes());
-                }
-            }
-
-            var deadLetterMessage = new Message<TKey, TMessage>
-            {
-                Key = consumerResult.Message.Key,
-                Value = consumerResult.Message.Value,
-                Headers = headers
-            };
-
-            await _deadLetterResiliencePipeline.ExecuteAsync(
-                async token => await deadLetterProducer.ProduceAsync(DeadLetterTopic, deadLetterMessage, token),
+            // Override headers win; remaining original headers are copied for DLQ processing.
+            await DeadLetterPublisher.PublishAsync(
+                deadLetterProducer,
+                DeadLetterTopic,
+                consumerResult.Message.Key,
+                consumerResult.Message.Value,
+                overrideHeaders,
+                consumerResult.Message.Headers,
+                ProduceResiliencePipeline.Instance,
                 stoppingToken);
 
             LogSentToDeadLetter(logger, DeadLetterTopic, consumerResult.Message.Key);
@@ -226,8 +201,6 @@ internal sealed partial class Consumer<TKey, TMessage>(
             .Build()
         : ResiliencePipeline.Empty;
 
-    private static readonly ResiliencePipeline _deadLetterResiliencePipeline = ProduceResiliencePipeline.Instance;
-
     [LoggerMessage(EventId = 100, Level = LogLevel.Information, Message = "Subscribed to kafka topic: {Topic}")]
     private static partial void LogSubscribed(ILogger logger, string topic);
 
@@ -260,7 +233,4 @@ internal sealed partial class Consumer<TKey, TMessage>(
 
     [LoggerMessage(EventId = 110, Level = LogLevel.Critical, Message = "Failed to publish message to dead letter topic: {DeadLetterTopic}. Message Key: {MessageKey}")]
     private static partial void LogFailedToPublishToDeadLetter(ILogger logger, Exception ex, string? deadLetterTopic, TKey messageKey);
-
-    [LoggerMessage(EventId = 111, Level = LogLevel.Debug, Message = "Skipping message targeted for consumer group {TargetGroup}. Key: {MessageKey}")]
-    private static partial void LogSkippedGroupMismatch(ILogger logger, TKey messageKey, string targetGroup);
 }

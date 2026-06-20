@@ -34,11 +34,10 @@ dotnet add package KafkaWorker.JsonSchema     # for JSON + Schema Registry
 - **Scoped DI per message** — A new DI scope per message, so scoped dependencies like EF Core `DbContext` work naturally
 - **Built-in retry with exponential backoff** *(optional)* — Configurable retry attempts (0–5) with jitter. Set `MaxRetries` to `0` to disable
 - **Dead letter queue support** *(optional)* — Failed messages are sent to a DLQ. Leave `DeadLetterTopic` null to disable
-- **Periodic DLQ reprocessing** *(optional)* — Register `AddKafkaWorkerDeadLetter` to automatically retry failed messages on a schedule
+- **Periodic DLQ reprocessing** *(optional)* — Register `AddKafkaWorkerDeadLetter` to automatically retry failed messages on a schedule. Messages are reprocessed **in place** (via your handler) so they never return to the original topic
 - **Invalid message handling** — Skip retries for messages that will never succeed via `InvalidMessageException`
 - **Multiple serialization formats** — Avro, JSON (plain and with Schema Registry), and Protobuf via separate packages
 - **Multiple consumers per host** — Register several `AddKafkaWorker` calls with different `TMessage` types, each pointing to its own config section
-- **Multi-consumer group isolation** — When multiple services share a topic, DLQ-requeued messages are only reprocessed by the consumer group that failed — [details](https://tenzinkabsang.github.io/KafkaWorker/dead-letter-queue#multi-consumer-group-isolation)
 - **Confluent ConsumerConfig overrides** — Pass an `Action<ConsumerConfig>` callback to customize `AutoOffsetReset`, `SessionTimeoutMs`, and other Confluent settings
 - **Built-in observability** — Emits OpenTelemetry-compatible metrics (`System.Diagnostics.Metrics`) for messages processed, processing duration, and DLQ activity
 - **Configuration validation on startup** — Bad config fails fast before consuming any messages
@@ -169,12 +168,12 @@ Or set `MaxRetries` to `0` and omit `DeadLetterTopic` for a simple consumer with
 │              (every 60 min)                                     │
 │                   │                                             │
 │                   ▼                                             │
-│           Republish to original topic                           │
+│            Reprocess via IMessageHandler (in-place)             │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Messages flow through your `IMessageHandler<TMessage>`. On success, the offset is committed. On failure, the library retries with exponential backoff. If all retries fail, the message is published to the dead letter topic. The DLQ consumer periodically republishes those messages back to the original topic for another attempt.
+Messages flow through your `IMessageHandler<TMessage>`. On success, the offset is committed. On failure, the library retries with exponential backoff. If all retries fail, the message is published to the dead letter topic. The DLQ consumer periodically reprocesses those messages by invoking your handler **in place** so failed messages never reappear on the original topic. If reprocessing fails again, the message is re-enqueued to the DLQ for a future attempt (bounded by `DeadLetterMaxReprocessAttempts`).
 
 Throwing `InvalidMessageException` short-circuits this flow — the message goes directly to the DLQ with no retries, and is permanently skipped during DLQ reprocessing.
 
@@ -348,8 +347,8 @@ The library emits [OpenTelemetry-compatible metrics](https://learn.microsoft.com
 | `kafkaworker.messages.processed` | Counter | `topic`, `status` (`success`, `invalid`, `failed`) | Messages processed |
 | `kafkaworker.messages.processing_duration` | Histogram (ms) | `topic` | Processing duration per message |
 | `kafkaworker.messages.dlq_published` | Counter | `topic`, `dlq_topic` | Messages published to DLQ |
-| `kafkaworker.dlq.messages_reprocessed` | Counter | `topic`, `dlq_topic` | Messages reprocessed from DLQ |
-| `kafkaworker.dlq.messages_skipped` | Counter | `topic`, `reason` (`invalid`, `max_attempts`, `missing_topic`) | Messages skipped during DLQ reprocessing |
+| `kafkaworker.dlq.messages_reprocessed` | Counter | `dlq_topic` | Messages reprocessed in place from DLQ |
+| `kafkaworker.dlq.messages_skipped` | Counter | `topic`, `reason` (`invalid`, `max_attempts`) | Messages skipped during DLQ reprocessing |
 
 ### Subscribing to Metrics
 
@@ -370,7 +369,8 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 
 - **Scoped DI per message** — `IMessageHandler<TMessage>` is resolved in a new DI scope for each message. Scoped dependencies like EF Core `DbContext` work naturally via constructor injection.
 - **DLQ is best-effort from the main consumer** — The main consumer attempts to publish failed messages to the DLQ with Polly retry, but if all attempts fail it logs at `Critical`, commits the offset, and moves on. Processing incoming records takes priority over guaranteeing every failed message reaches the DLQ.
-- **DLQ consumer preserves messages on failure** — Unlike the main consumer, if the DLQ consumer fails to republish a message to the original topic, it stops the batch without committing. The message will be retried on the next scheduled run.
+- **DLQ consumer preserves messages on failure** — Unlike the main consumer, if the DLQ consumer fails to re-enqueue a message back to the DLQ, it stops the batch without committing. The message will be retried on the next scheduled run.
+- **In-place reprocessing requires a handler** — The DLQ consumer invokes `IMessageHandler<TMessage>` directly, so register the consumer (`AddKafkaWorker`) before `AddKafkaWorkerDeadLetter`. Registration throws at startup if the handler is missing.
 - **Single partition DLQ** — For optimal performance, configure the dead letter topic with a single partition.
 - **Backpressure** — The consume loop processes messages sequentially, so it naturally applies backpressure — Kafka won't outpace your processor. If you need to throttle calls to a downstream system, add rate limiting inside your `HandleMessageAsync` implementation.
 

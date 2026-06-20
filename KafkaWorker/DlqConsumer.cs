@@ -1,4 +1,5 @@
 using Confluent.Kafka;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -7,13 +8,17 @@ using Polly;
 namespace KafkaWorker;
 
 /// <summary>
-/// Periodically processes messages from the dead letter queue and reprocesses them by sending
-/// back to the original topic for retry.
+/// Periodically processes messages from the dead letter queue and reprocesses them in place.
 /// </summary>
 /// <remarks>
 /// The consumer runs on a configurable interval (default: 60 minutes) and processes all pending
 /// DLQ messages in each batch. Messages marked as invalid (via <see cref="InvalidMessageException"/>)
 /// or that have exceeded the maximum reprocess attempts are skipped.
+/// <para>
+/// Messages are reprocessed in place by invoking the registered <see cref="IMessageHandler{TMessage}"/>.
+/// A message that fails again is re-enqueued to the dead letter topic with an incremented attempt for a
+/// future tick, so failed messages never reappear on the original topic.
+/// </para>
 /// <para>
 /// For optimal performance, the dead letter topic should be configured with a single partition.
 /// </para>
@@ -23,6 +28,7 @@ namespace KafkaWorker;
 internal sealed partial class DlqConsumer<TKey, TMessage>(
     IProducer<TKey, TMessage> producer,
     IDlqConsumerFactory<TKey, TMessage> consumerFactory,
+    IServiceScopeFactory serviceScopeFactory,
     IOptionsMonitor<KafkaWorkerConfig> kafkaConfigMonitor,
     KafkaWorkerMetrics metrics,
     ILogger<DlqConsumer<TKey, TMessage>> logger,
@@ -126,9 +132,15 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     }
 
     /// <summary>
-    /// Returns true if the message was handled (produced or intentionally skipped).
-    /// Returns false if the produce to the original topic failed — the batch should stop.
+    /// Returns true if the message was handled (reprocessed or intentionally skipped) and its
+    /// offset should be committed. Returns false if a produce operation failed — the batch should stop.
     /// </summary>
+    /// <remarks>
+    /// The message is reprocessed in place by invoking the registered message handler. On success the
+    /// offset is committed. A permanent failure (<see cref="InvalidMessageException"/>) is skipped. Any
+    /// other failure re-enqueues the message to the dead letter topic with an incremented attempt count
+    /// so it is retried on a future tick (bounded by <see cref="KafkaWorkerConfig.DeadLetterMaxReprocessAttempts"/>).
+    /// </remarks>
     private async Task<bool> HandleMessageAsync(
         ConsumeResult<TKey, TMessage> consumeResult,
         string batchId,
@@ -149,25 +161,68 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
             return true;
         }
 
-        var originalTopic = consumeResult.Message.Headers.GetOriginalTopic();
-
-        if (string.IsNullOrEmpty(originalTopic))
+        try
         {
-            LogMissingOriginalTopic(logger, consumeResult.Message.Key);
-            metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "missing_topic"));
+            using var scope = serviceScopeFactory.CreateScope();
+            var handler = scope.ServiceProvider.GetRequiredService<IMessageHandler<TMessage>>();
+            await handler.HandleMessageAsync(consumeResult.Message.Value, stoppingToken);
+
+            LogSuccessfullyReprocessed(logger, consumeResult.Message.Key);
+            metrics.DlqReprocessed.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic));
             return true;
         }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (InvalidMessageException ex)
+        {
+            // Permanent failure - the message will never succeed, so skip it (commit and move on).
+            LogInvalidMessageInPlace(logger, ex, consumeResult.Message.Key);
+            metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "invalid"));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // Reprocessing failed again - re-enqueue to the DLQ for a future tick with an incremented attempt.
+            LogInPlaceReprocessFailed(logger, ex, consumeResult.Message.Key);
+            return await ReEnqueueToDeadLetterAsync(consumeResult, batchId, ex, stoppingToken);
+        }
+    }
+
+    /// <summary>
+    /// Re-enqueues a message that failed in-place reprocessing back to the dead letter topic with an
+    /// incremented reprocess-attempt count and the current batch id (so the current batch's loop
+    /// detection stops before reprocessing it again). Returns false if the produce fails so the batch
+    /// stops without committing.
+    /// </summary>
+    private async Task<bool> ReEnqueueToDeadLetterAsync(
+        ConsumeResult<TKey, TMessage> consumeResult,
+        string batchId,
+        Exception failure,
+        CancellationToken stoppingToken)
+    {
+        var nextAttempt = consumeResult.Message.Headers.GetReprocessAttemptCount() + 1;
 
         try
         {
-            var reprocessMessage = CreateReprocessMessage(consumeResult, batchId);
+            var overrideHeaders = new Headers();
+            overrideHeaders.AddUtf8(KafkaHeaders.BatchId, batchId);
+            overrideHeaders.AddUtf8(KafkaHeaders.ReprocessedAttempt, nextAttempt.ToString());
+            overrideHeaders.AddUtf8(KafkaHeaders.ErrorMessage, failure.Message);
 
-            await _produceResiliencePipeline.ExecuteAsync(
-                async token => await producer.ProduceAsync(originalTopic, reprocessMessage, token),
+            await DeadLetterPublisher.PublishAsync(
+                producer,
+                DeadLetterTopic!,
+                consumeResult.Message.Key,
+                consumeResult.Message.Value,
+                overrideHeaders,
+                consumeResult.Message.Headers,
+                _produceResiliencePipeline,
                 stoppingToken);
 
-            LogSuccessfullyReprocessed(logger, consumeResult.Message.Key, originalTopic);
-            metrics.DlqReprocessed.Add(1, new KeyValuePair<string, object?>("topic", originalTopic), new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic));
+            LogReEnqueuedToDeadLetter(logger, consumeResult.Message.Key, nextAttempt);
+            metrics.DlqPublished.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "reprocess_failed"));
             return true;
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -176,33 +231,9 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
         }
         catch (Exception ex)
         {
-            LogFailedToReprocess(logger, ex, consumeResult.Message.Key);
+            LogFailedToReEnqueue(logger, ex, consumeResult.Message.Key);
             return false;
         }
-    }
-
-    private static Message<TKey, TMessage> CreateReprocessMessage(ConsumeResult<TKey, TMessage> consumeResult, string batchId)
-    {
-        var currentAttempt = consumeResult.Message.Headers.GetReprocessAttemptCount();
-
-        // Note: We don't need to preserve original-topic header here because the main consumer
-        // always adds it when sending to the DLQ. Only batch-id and reprocess-attempt are needed.
-        var headers = new Headers();
-        headers.AddUtf8(KafkaHeaders.BatchId, batchId);
-        headers.AddUtf8(KafkaHeaders.ReprocessedAttempt, (currentAttempt + 1).ToString());
-
-        var failedGroupId = consumeResult.Message.Headers.GetFailedConsumerGroupId();
-        if (!string.IsNullOrEmpty(failedGroupId))
-        {
-            headers.AddUtf8(KafkaHeaders.FailedConsumerGroupId, failedGroupId);
-        }
-
-        return new Message<TKey, TMessage>
-        {
-            Key = consumeResult.Message.Key,
-            Value = consumeResult.Message.Value,
-            Headers = headers
-        };
     }
 
     [LoggerMessage(EventId = 200, Level = LogLevel.Information, Message = "Starting KafkaDlqConsumer for topic: {DeadLetterTopic} with processing interval: {IntervalMinutes} minutes")]
@@ -235,12 +266,18 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     [LoggerMessage(EventId = 209, Level = LogLevel.Warning, Message = "Message has exceeded max reprocess attempts ({MaxAttempts}). Skipping. Key: {MessageKey}")]
     private static partial void LogExceededMaxReprocessAttempts(ILogger logger, int maxAttempts, TKey messageKey);
 
-    [LoggerMessage(EventId = 210, Level = LogLevel.Warning, Message = "Original topic header missing. Cannot reprocess message. Key: {MessageKey}")]
-    private static partial void LogMissingOriginalTopic(ILogger logger, TKey messageKey);
+    [LoggerMessage(EventId = 210, Level = LogLevel.Information, Message = "Successfully reprocessed dead letter message in place. Key: {MessageKey}")]
+    private static partial void LogSuccessfullyReprocessed(ILogger logger, TKey messageKey);
 
-    [LoggerMessage(EventId = 211, Level = LogLevel.Information, Message = "Successfully reprocessed message. Key: {MessageKey}, OriginalTopic: {OriginalTopic}")]
-    private static partial void LogSuccessfullyReprocessed(ILogger logger, TKey messageKey, string originalTopic);
+    [LoggerMessage(EventId = 214, Level = LogLevel.Warning, Message = "Invalid message detected during in-place reprocessing (will not succeed on retry). Skipping. Key: {MessageKey}")]
+    private static partial void LogInvalidMessageInPlace(ILogger logger, Exception ex, TKey messageKey);
 
-    [LoggerMessage(EventId = 212, Level = LogLevel.Error, Message = "Failed to reprocess dead letter message. Key: {MessageKey}")]
-    private static partial void LogFailedToReprocess(ILogger logger, Exception ex, TKey messageKey);
+    [LoggerMessage(EventId = 215, Level = LogLevel.Warning, Message = "In-place reprocessing failed. Re-enqueuing to dead letter topic. Key: {MessageKey}")]
+    private static partial void LogInPlaceReprocessFailed(ILogger logger, Exception ex, TKey messageKey);
+
+    [LoggerMessage(EventId = 216, Level = LogLevel.Information, Message = "Re-enqueued message to dead letter topic for future reprocessing. Key: {MessageKey}, Attempt: {Attempt}")]
+    private static partial void LogReEnqueuedToDeadLetter(ILogger logger, TKey messageKey, int attempt);
+
+    [LoggerMessage(EventId = 217, Level = LogLevel.Error, Message = "Failed to re-enqueue message to dead letter topic. Key: {MessageKey}")]
+    private static partial void LogFailedToReEnqueue(ILogger logger, Exception ex, TKey messageKey);
 }

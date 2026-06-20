@@ -85,15 +85,19 @@ public static class ServiceCollectionExtensions
     /// <remarks>
     /// <para>
     /// The DLQ consumer runs on a configurable interval (default: 60 minutes) and reprocesses messages
-    /// by sending them back to the original topic. Messages are skipped if they:
+    /// in place by invoking the registered <see cref="IMessageHandler{TMessage}"/> directly, so messages
+    /// never reappear on the original topic. A message that fails again is re-enqueued to the dead letter
+    /// topic with an incremented attempt for a future tick. Messages are skipped if they:
     /// <list type="bullet">
     ///   <item>Are marked as invalid messages (thrown <see cref="InvalidMessageException"/>)</item>
     ///   <item>Have exceeded the maximum reprocess attempts</item>
     /// </list>
     /// </para>
     /// <para>
-    /// This method should be called after the main consumer registration, as it depends on
-    /// <see cref="KafkaWorkerConfig"/> being configured.
+    /// This method must be called after the main consumer registration (<c>AddKafkaWorker</c>), as it
+    /// depends on <see cref="KafkaWorkerConfig"/> being configured and requires an
+    /// <see cref="IMessageHandler{TMessage}"/> to be registered for reprocessing. Registration throws if
+    /// no handler is available.
     /// </para>
     /// </remarks>
     public static IServiceCollection AddKafkaWorkerDeadLetter<TMessage>(
@@ -112,6 +116,16 @@ public static class ServiceCollectionExtensions
             throw new InvalidOperationException(
                 $"DeadLetterTopic must be configured in '{configSection}' when using AddKafkaWorkerDeadLetter. " +
                 $"Either set the DeadLetterTopic configuration value or remove the AddKafkaWorkerDeadLetter registration.");
+        }
+
+        // The DLQ consumer reprocesses messages by invoking the registered message handler directly.
+        // Fail fast at startup if no handler is registered (e.g. a standalone DLQ reprocessor that never
+        // called AddKafkaWorker) so the misconfiguration is obvious rather than failing per message.
+        if (!services.Any(sd => sd.ServiceType == typeof(IMessageHandler<TMessage>)))
+        {
+            throw new InvalidOperationException(
+                $"No IMessageHandler<{typeof(TMessage).Name}> is registered. Call AddKafkaWorker before " +
+                $"AddKafkaWorkerDeadLetter so the handler is available for reprocessing dead letter messages.");
         }
 
         var kafkaConnection = GetKafkaConnectionConfig(configuration);

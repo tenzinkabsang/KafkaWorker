@@ -177,7 +177,7 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
     }
 
     [Fact]
-    public async Task TransientFailure_DlqReprocessesAndConsumerSucceeds()
+    public async Task TransientFailure_DlqReprocessesInPlaceWithoutReturningToOriginalTopic()
     {
         // Arrange
         string topic = $"{Guid.NewGuid():N}";
@@ -194,7 +194,7 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
 
         var message = new OrderMessage
         {
-            OrderId = 42,
+            OrderId = 7,
             SellerId = "DesignSpace",
             OrderDate = DateTime.UtcNow,
             Total = 100.00m
@@ -204,7 +204,7 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         await KafkaHelper.InitializeTopicAsync(topic, messageJson);
         await KafkaHelper.InitializeEmptyTopicAsync(dlqTopic);
 
-        // Fail the first call, succeed on the second (after DLQ round-trip)
+        // Call 1 (main consumer) fails → DLQ. Call 2 (in-place from DLQ consumer) succeeds.
         var failureState = new TransientFailureState { FailCount = 1 };
 
         var fakeTime = new FakeTimeProvider();
@@ -231,20 +231,16 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         await Task.Delay(200);
         fakeTime.Advance(TimeSpan.FromMinutes(1));
 
-        // 3) DLQ consumer sends message back to original topic
-        await logProvider.WaitForLogAsync("Successfully reprocessed message", hostTask);
-
-        // 4) Main consumer processes the redelivered message successfully
-        await logProvider.WaitForLogAsync("Successfully processed message", hostTask);
+        // 3) DLQ consumer reprocesses the message in place (handler invoked directly)
+        await logProvider.WaitForLogAsync("Successfully reprocessed dead letter message in place", hostTask);
 
         await cts.CancelAsync();
         await hostTask;
 
-        // Assert — full round-trip: fail → DLQ → DLQ sends back → success
+        // Assert — in-place reprocessing: fail → DLQ → handled in place, never republished
         Assert.True(logProvider.HasLogged("Failed to process message"));
         Assert.True(logProvider.HasLogged("Message sent to dead letter topic"));
-        Assert.True(logProvider.HasLogged("Successfully reprocessed message"));
-        Assert.True(logProvider.HasLogged("Successfully processed message"));
+        Assert.True(logProvider.HasLogged("Successfully reprocessed dead letter message in place"));
         Assert.False(logProvider.HasLogged("Invalid message detected"));
     }
 
@@ -277,11 +273,11 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         await KafkaHelper.InitializeTopicAsync(topic, messageJson);
         await KafkaHelper.InitializeEmptyTopicAsync(dlqTopic);
 
-        // Always fail — message bounces between consumer and DLQ until max attempts exceeded
+        // Always fail — message is re-enqueued to the DLQ until max attempts exceeded
         var failureState = new TransientFailureState { FailCount = int.MaxValue };
 
         var fakeTime = new FakeTimeProvider();
-        // Requires 2 DLQ ticks: tick 1 sends back (attempt 1), tick 2 sees attempt >= max (1) and skips
+        // Requires 2 DLQ ticks: tick 1 re-enqueues (attempt 1), tick 2 sees attempt >= max (1) and skips
         using var cts = new CancellationTokenSource(TestLoggerProvider.WaitTime);
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
@@ -301,15 +297,12 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         // 1) Main consumer fails → sent to DLQ
         await logProvider.WaitForLogAsync("Message sent to dead letter topic", hostTask);
 
-        // 2) DLQ tick 1: advance fake time → sends message back (attempt 1)
+        // 2) DLQ tick 1: advance fake time → in-place handler fails → re-enqueued (attempt 1)
         await Task.Delay(200);
         fakeTime.Advance(TimeSpan.FromMinutes(1));
-        await logProvider.WaitForLogAsync("Successfully reprocessed message", hostTask);
+        await logProvider.WaitForLogAsync("Re-enqueued message to dead letter topic", hostTask);
 
-        // 3) Wait for consumer to fail again and send back to DLQ (second occurrence)
-        await logProvider.WaitForLogCountAsync("Message sent to dead letter topic", 2, hostTask);
-
-        // 4) DLQ tick 2: advance fake time → sees attempt >= max, skips
+        // 3) DLQ tick 2: advance fake time → sees attempt >= max, skips
         await Task.Delay(200);
         fakeTime.Advance(TimeSpan.FromMinutes(1));
         await logProvider.WaitForLogAsync("exceeded max reprocess attempts", hostTask);
@@ -317,112 +310,12 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         await cts.CancelAsync();
         await hostTask;
 
-        // Assert — full cycle: fail → DLQ → send back → fail again → DLQ → max attempts → skip
+        // Assert — full cycle: fail → DLQ → in-place fail → re-enqueue → max attempts → skip
         Assert.True(logProvider.HasLogged("Failed to process message"));
         Assert.True(logProvider.HasLogged("Message sent to dead letter topic"));
-        Assert.True(logProvider.HasLogged("Successfully reprocessed message"));
+        Assert.True(logProvider.HasLogged("Re-enqueued message to dead letter topic"));
         Assert.True(logProvider.HasLogged("exceeded max reprocess attempts"));
         Assert.False(logProvider.HasLogged("Successfully processed message"));
         Assert.False(logProvider.HasLogged("Invalid message detected"));
-    }
-
-    [Fact]
-    public async Task DlqRequeue_OtherConsumerGroup_SkipsReprocessedMessage()
-    {
-        // Arrange — two consumer groups on the same topic
-        string topic = $"{Guid.NewGuid():N}";
-        string dlqTopic = $"dlq-{topic}";
-
-        var message = new OrderMessage
-        {
-            OrderId = 42,
-            SellerId = "DesignSpace",
-            OrderDate = DateTime.UtcNow,
-            Total = 100.00m
-        };
-        var messageJson = System.Text.Json.JsonSerializer.Serialize(message);
-
-        await KafkaHelper.InitializeTopicAsync(topic, messageJson);
-        await KafkaHelper.InitializeEmptyTopicAsync(dlqTopic);
-
-        // Host A: group-a — fails first call, succeeds after DLQ round-trip
-        var failureState = new TransientFailureState { FailCount = 1 };
-        var fakeTime = new FakeTimeProvider();
-
-        var configA = new Dictionary<string, string?>
-        {
-            ["KafkaWorker:Consumer:Topic"] = topic,
-            ["KafkaWorker:Consumer:GroupId"] = $"group-a-{topic}",
-            ["KafkaWorker:Consumer:DeadLetterTopic"] = dlqTopic,
-            ["KafkaWorker:Consumer:MaxRetries"] = "0",
-            ["KafkaWorker:Consumer:DeadLetterProcessingIntervalMinutes"] = "1",
-            ["KafkaWorker:Consumer:DeadLetterMaxReprocessAttempts"] = "3"
-        };
-
-        // Host B: group-b — always succeeds, no DLQ needed
-        var configB = new Dictionary<string, string?>
-        {
-            ["KafkaWorker:Consumer:Topic"] = topic,
-            ["KafkaWorker:Consumer:GroupId"] = $"group-b-{topic}",
-        };
-
-        using var ctsA = new CancellationTokenSource(TestLoggerProvider.WaitTime);
-        using var ctsB = new CancellationTokenSource(TestLoggerProvider.WaitTime);
-
-        var (hostA, logProviderA) = HostBuilderHelper.CreateHost(testOutputHelper, configA, (context, services) =>
-        {
-            services.AddSingleton(failureState);
-            services.AddSingleton<TimeProvider>(fakeTime);
-            services.AddKafkaWorker<OrderMessage, TransientFailureHandlerJson>(context.Configuration);
-            services.AddKafkaWorkerDeadLetter<OrderMessage>(context.Configuration);
-        });
-
-        var (hostB, logProviderB) = HostBuilderHelper.CreateHost(testOutputHelper, configB, (context, services) =>
-        {
-            services.AddKafkaWorker<OrderMessage, OrderMessageHandlerJson>(context.Configuration);
-        });
-
-        // Act
-        var hostTaskA = Task.Run(async () => await hostA.RunAsync(ctsA.Token));
-        var hostTaskB = Task.Run(async () => await hostB.RunAsync(ctsB.Token));
-
-        await logProviderA.WaitForLogAsync("Subscribed to kafka", hostTaskA);
-        await logProviderB.WaitForLogAsync("Subscribed to kafka", hostTaskB);
-        await Task.Delay(TimeSpan.FromSeconds(3));
-
-        await KafkaHelper.PublishMessageAsync(topic, "key", messageJson);
-
-        // 1) Both groups consume the original message
-        //    Host B processes successfully
-        await logProviderB.WaitForLogAsync("Successfully processed message", hostTaskB);
-        //    Host A fails → message sent to DLQ
-        await logProviderA.WaitForLogAsync("Message sent to dead letter topic", hostTaskA);
-
-        // 2) Advance fake time to trigger Host A's DLQ consumer tick
-        await Task.Delay(200);
-        fakeTime.Advance(TimeSpan.FromMinutes(1));
-
-        // 3) DLQ consumer sends message back to original topic with failed-consumer-group-id header
-        await logProviderA.WaitForLogAsync("Successfully reprocessed message", hostTaskA);
-
-        // 4) Host A reprocesses the requeued message successfully (header matches group-a)
-        await logProviderA.WaitForLogAsync("Successfully processed message", hostTaskA);
-
-        // 5) Host B skips the requeued message (header says group-a, not group-b)
-        await logProviderB.WaitForLogAsync("Skipping message targeted for consumer group", hostTaskB);
-
-        await ctsA.CancelAsync();
-        await ctsB.CancelAsync();
-        await Task.WhenAll(hostTaskA, hostTaskB);
-
-        // Assert — Host A: full DLQ round-trip
-        Assert.True(logProviderA.HasLogged("Failed to process message"));
-        Assert.True(logProviderA.HasLogged("Message sent to dead letter topic"));
-        Assert.True(logProviderA.HasLogged("Successfully reprocessed message"));
-        Assert.True(logProviderA.HasLogged("Successfully processed message"));
-
-        // Assert — Host B: processed original, skipped the DLQ-requeued message
-        Assert.True(logProviderB.HasLogged("Successfully processed message"));
-        Assert.True(logProviderB.HasLogged("Skipping message targeted for consumer group"));
     }
 }

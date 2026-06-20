@@ -25,7 +25,7 @@ The library emits [OpenTelemetry-compatible metrics](https://learn.microsoft.com
 | `kafkaworker.messages.processed` | Counter | `topic`, `status` | Messages processed by the main consumer |
 | `kafkaworker.messages.processing_duration` | Histogram (ms) | `topic` | Processing duration per message |
 | `kafkaworker.messages.dlq_published` | Counter | `topic`, `dlq_topic` | Messages published to the dead letter queue |
-| `kafkaworker.dlq.messages_reprocessed` | Counter | `topic`, `dlq_topic` | Messages reprocessed from the DLQ back to the original topic |
+| `kafkaworker.dlq.messages_reprocessed` | Counter | `dlq_topic` | Messages successfully reprocessed in place from the DLQ |
 | `kafkaworker.dlq.messages_skipped` | Counter | `topic`, `reason` | Messages skipped during DLQ reprocessing |
 
 ### Tag Values
@@ -38,7 +38,6 @@ The library emits [OpenTelemetry-compatible metrics](https://learn.microsoft.com
 **`reason`** (on `dlq.messages_skipped`):
 - `invalid` — Message marked as invalid (will never succeed)
 - `max_attempts` — Message exceeded the maximum reprocess attempts
-- `missing_topic` — Original topic header is missing from the DLQ message
 
 ---
 

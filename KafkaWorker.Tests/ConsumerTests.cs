@@ -354,58 +354,6 @@ public class ConsumerTests : IDisposable
 
     #endregion
 
-    #region Consumer group isolation - skip messages for other groups
-
-    [Fact]
-    public async Task ExecuteAsync_MessageWithDifferentGroupId_SkipsAndCommits()
-    {
-        var sut = CreateConsumer();
-        var headers = new Headers();
-        headers.Add(KafkaHeaders.FailedConsumerGroupId, System.Text.Encoding.UTF8.GetBytes("other-group"));
-        var consumeResult = SetupSingleMessage(headers: headers);
-
-        await sut.StartAsync(_cts.Token);
-        await WaitUntilCancellationRequestedAsync(_cts);
-        await sut.StopAsync(CancellationToken.None);
-
-        await _messageHandler.DidNotReceive()
-            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
-        _kafkaConsumer.Received(1).StoreOffset(consumeResult);
-        _kafkaConsumer.Received(1).Commit();
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_MessageWithMatchingGroupId_ProcessesNormally()
-    {
-        var sut = CreateConsumer();
-        var headers = new Headers();
-        headers.Add(KafkaHeaders.FailedConsumerGroupId, System.Text.Encoding.UTF8.GetBytes("test-group"));
-        SetupSingleMessage(headers: headers);
-
-        await sut.StartAsync(_cts.Token);
-        await WaitUntilCancellationRequestedAsync(_cts);
-        await sut.StopAsync(CancellationToken.None);
-
-        await _messageHandler.Received(1)
-            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_MessageWithNoGroupIdHeader_ProcessesNormally()
-    {
-        var sut = CreateConsumer();
-        SetupSingleMessage();
-
-        await sut.StartAsync(_cts.Token);
-        await WaitUntilCancellationRequestedAsync(_cts);
-        await sut.StopAsync(CancellationToken.None);
-
-        await _messageHandler.Received(1)
-            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
-    }
-
-    #endregion
-
     #region Null / EOF message skipping
 
     [Fact]
@@ -597,47 +545,6 @@ public class ConsumerTests : IDisposable
             TestDlqTopic,
             Arg.Is<Message<string, TestMessage>>(m =>
                 HasHeader(m.Headers, "correlation-id", "abc-123")),
-            Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task HandlerFailure_DlqMessageContainsFailedConsumerGroupIdHeader()
-    {
-        var sut = CreateConsumer();
-        SetupSingleMessage();
-        _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
-            .ThrowsAsync(new InvalidOperationException("fail"));
-
-        await sut.StartAsync(_cts.Token);
-        await WaitUntilCancellationRequestedAsync(_cts);
-        await sut.StopAsync(CancellationToken.None);
-
-        await _deadLetterProducer.Received().ProduceAsync(
-            TestDlqTopic,
-            Arg.Is<Message<string, TestMessage>>(m =>
-                HasHeader(m.Headers, KafkaHeaders.FailedConsumerGroupId, "test-group")),
-            Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task HandlerFailure_DoesNotDuplicateFailedConsumerGroupIdHeader()
-    {
-        var sut = CreateConsumer();
-        var originalHeaders = new Headers();
-        originalHeaders.Add(KafkaHeaders.FailedConsumerGroupId, System.Text.Encoding.UTF8.GetBytes("test-group"));
-        SetupSingleMessage(headers: originalHeaders);
-        _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
-            .ThrowsAsync(new InvalidOperationException("fail"));
-
-        await sut.StartAsync(_cts.Token);
-        await WaitUntilCancellationRequestedAsync(_cts);
-        await sut.StopAsync(CancellationToken.None);
-
-        await _deadLetterProducer.Received().ProduceAsync(
-            TestDlqTopic,
-            Arg.Is<Message<string, TestMessage>>(m =>
-                HasHeader(m.Headers, KafkaHeaders.FailedConsumerGroupId, "test-group") &&
-                m.Headers.Where(h => h.Key == KafkaHeaders.FailedConsumerGroupId).Count() == 1),
             Arg.Any<CancellationToken>());
     }
 

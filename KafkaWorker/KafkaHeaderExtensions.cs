@@ -18,9 +18,6 @@ internal static class KafkaHeaderExtensions
     public static void AddUtf8(this Headers headers, string key, string value)
         => headers.Add(key, Encoding.UTF8.GetBytes(value));
 
-    public static string GetOriginalTopic(this Headers headers)
-        => headers.GetValue(KafkaHeaders.OriginalTopic) ?? string.Empty;
-
     public static string GetBatchId(this Headers headers)
         => headers.GetValue(KafkaHeaders.BatchId) ?? string.Empty;
 
@@ -32,7 +29,4 @@ internal static class KafkaHeaderExtensions
 
     public static bool IsInvalidMessage(this Headers headers)
         => string.Equals(headers.GetValue(KafkaHeaders.InvalidMessage), "true", StringComparison.OrdinalIgnoreCase);
-
-    public static string? GetFailedConsumerGroupId(this Headers headers)
-        => headers.GetValue(KafkaHeaders.FailedConsumerGroupId);
 }

@@ -156,11 +156,11 @@ That's it — the simplest setup consumes and retries with zero DLQ config. See 
 │              (every 60 min)                                     │
 │                   │                                             │
 │                   ▼                                             │
-│           Republish to original topic                           │
+│            Reprocess via IMessageHandler (in-place)             │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Messages flow through your `IMessageHandler<TMessage>`. On success, the offset is committed. On failure, the library retries with exponential backoff. If all retries fail, the message is published to the dead letter topic. The DLQ consumer periodically republishes those messages back to the original topic for another attempt.
+Messages flow through your `IMessageHandler<TMessage>`. On success, the offset is committed. On failure, the library retries with exponential backoff. If all retries fail, the message is published to the dead letter topic. The DLQ consumer periodically reprocesses those messages by invoking your handler **in place** so failed messages never reappear on the original topic.
 
 Throwing `InvalidMessageException` short-circuits this flow — the message goes directly to the DLQ with no retries, and is permanently skipped during DLQ reprocessing.
