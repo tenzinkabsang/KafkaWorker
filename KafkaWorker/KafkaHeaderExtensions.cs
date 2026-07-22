@@ -12,7 +12,8 @@ internal static class KafkaHeaderExtensions
     public static string? GetValue(this Headers? headers, string key)
     {
         var header = headers?.FirstOrDefault(h => h.Key == key);
-        return header != null ? Encoding.UTF8.GetString(header.GetValueBytes()) : null;
+        var bytes = header?.GetValueBytes();
+        return bytes is null ? null : Encoding.UTF8.GetString(bytes);
     }
 
     public static void AddUtf8(this Headers headers, string key, string value)

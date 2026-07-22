@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace KafkaWorker;
 
@@ -13,7 +14,7 @@ namespace KafkaWorker;
 /// </summary>
 public static class ServiceCollectionExtensions
 {
-    internal static string GetDlqConfigKey<TMessage>() => $"dlq-{typeof(TMessage).Name}";
+    internal static string GetDlqConfigKey<TMessage>() => $"dlq-{typeof(TMessage).FullName}";
 
     /// <summary>
     /// Registers a hosted Kafka consumer that deserializes messages using plain JSON (System.Text.Json) without Schema Registry.
@@ -26,6 +27,8 @@ public static class ServiceCollectionExtensions
     /// <param name="configureConsumer">Optional callback to configure the underlying Confluent <see cref="ConsumerConfig"/>.
     /// Settings like <c>AutoOffsetReset</c> and <c>SessionTimeoutMs</c> can be changed here.
     /// <c>EnableAutoCommit</c> and <c>EnableAutoOffsetStore</c> are enforced by the library and cannot be overridden.</param>
+    /// <param name="configureProducer">Optional callback to configure the underlying Confluent <see cref="ProducerConfig"/>
+    /// used for dead letter publishing (e.g. security settings not covered by <see cref="KafkaConnectionConfig"/>).</param>
     /// <returns>The service collection for chaining.</returns>
     /// <remarks>
     /// <para>
@@ -44,10 +47,11 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         IConfiguration configuration,
         string configSection = KafkaWorkerConfig.Section,
-        Action<ConsumerConfig>? configureConsumer = null)
+        Action<ConsumerConfig>? configureConsumer = null,
+        Action<ProducerConfig>? configureProducer = null)
       where TMessage : class
       where THandler : class, IMessageHandler<TMessage>
-        => AddKafkaWorker<string, TMessage, THandler>(services, configuration, configSection, configureConsumer);
+        => AddKafkaWorker<string, TMessage, THandler>(services, configuration, configSection, configureConsumer, configureProducer);
 
     /// <inheritdoc cref="AddKafkaWorker{TMessage, THandler}"/>
     /// <typeparam name="TKey">The message key type.</typeparam>
@@ -57,20 +61,21 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         IConfiguration configuration,
         string configSection = KafkaWorkerConfig.Section,
-        Action<ConsumerConfig>? configureConsumer = null)
+        Action<ConsumerConfig>? configureConsumer = null,
+        Action<ProducerConfig>? configureProducer = null)
       where TMessage : class
       where THandler : class, IMessageHandler<TMessage>
     {
         services.TryAddSingleton<IDeserializer<TMessage>>(sp => new JsonStringDeserializer<TMessage>());
 
-        RegisterProducer<TKey, TMessage>(services, configuration, (ProducerBuilder<TKey, TMessage> b) =>
+        RegisterProducer<TKey, TMessage>(services, configuration, (sp, b) =>
         {
             b.SetValueSerializer(new JsonStringSerializer<TMessage>());
-        });
+        }, configureProducer);
 
-        return RegisterHostedConsumer<TKey, TMessage, THandler>(services, configuration, configSection, configureConsumer, b =>
+        return RegisterHostedConsumer<TKey, TMessage, THandler>(services, configuration, configSection, configureConsumer, (sp, b) =>
         {
-            b.SetValueDeserializer(new JsonStringDeserializer<TMessage>());
+            b.SetValueDeserializer(sp.GetRequiredService<IDeserializer<TMessage>>());
         });
     }
 
@@ -160,7 +165,7 @@ public static class ServiceCollectionExtensions
         IConfiguration configuration,
         string configSection,
         Action<ConsumerConfig>? configureConsumer,
-        Action<ConsumerBuilder<TKey, TMessage>> deserializerConfig)
+        Action<IServiceProvider, ConsumerBuilder<TKey, TMessage>> deserializerConfig)
         where TMessage : class
         where THandler : class, IMessageHandler<TMessage>
     {
@@ -175,7 +180,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<KafkaWorkerMetrics>();
 
         services
-            .AddOptions<KafkaWorkerConfig>(typeof(TMessage).Name)
+            .AddOptions<KafkaWorkerConfig>(typeof(TMessage).FullName!)
             .Bind(configuration.GetSection(configSection))
             .ValidateDataAnnotations()
             .ValidateOnStart();
@@ -199,8 +204,11 @@ public static class ServiceCollectionExtensions
             consumerConfig.EnableAutoOffsetStore = false;
             consumerConfig.EnableAutoCommit = false;
 
-            var builder = new ConsumerBuilder<TKey, TMessage>(consumerConfig);
-            deserializerConfig(builder);
+            var logger = sp.GetRequiredService<ILogger<Consumer<TKey, TMessage>>>();
+            var builder = new ConsumerBuilder<TKey, TMessage>(consumerConfig)
+                .SetLogHandler((_, logMessage) => KafkaClientLogging.LogClientMessage(logger, logMessage.Name, logMessage.Message))
+                .SetErrorHandler((_, error) => KafkaClientLogging.LogClientError(logger, error.Reason, error.IsFatal));
+            deserializerConfig(sp, builder);
             return builder.Build();
         });
 
@@ -215,7 +223,8 @@ public static class ServiceCollectionExtensions
     internal static void RegisterProducer<TKey, TMessage>(
         IServiceCollection services,
         IConfiguration configuration,
-        Action<ProducerBuilder<TKey, TMessage>> builderConfig) where TMessage : class
+        Action<IServiceProvider, ProducerBuilder<TKey, TMessage>> builderConfig,
+        Action<ProducerConfig>? configureProducer = null) where TMessage : class
     {
         var kafkaConnection = GetKafkaConnectionConfig(configuration);
         services.TryAddSingleton<IProducer<TKey, TMessage>>(sp =>
@@ -226,10 +235,15 @@ public static class ServiceCollectionExtensions
                 ClientId = Dns.GetHostName()
             };
             ApplySecurityConfig(producerConfig, kafkaConnection);
+            configureProducer?.Invoke(producerConfig);
             var builder = new ProducerBuilder<TKey, TMessage>(producerConfig);
-            builderConfig(builder);
+            builderConfig(sp, builder);
             return builder.Build();
         });
+
+        // The main consumer only touches the producer when a message is dead-lettered; resolve it
+        // lazily so no producer (or broker connection) is created when DLQ publishing never happens.
+        services.TryAddSingleton(sp => new Lazy<IProducer<TKey, TMessage>>(() => sp.GetRequiredService<IProducer<TKey, TMessage>>()));
     }
 
     /// <summary>
@@ -249,7 +263,7 @@ public static class ServiceCollectionExtensions
         if (kafkaConnection.IsSecuredCluster)
         {
             clientConfig.SecurityProtocol = SecurityProtocol.SaslSsl;
-            clientConfig.SaslMechanism = SaslMechanism.ScramSha512;
+            clientConfig.SaslMechanism = kafkaConnection.SaslMechanism;
             clientConfig.SaslUsername = kafkaConnection.Username;
             clientConfig.SaslPassword = kafkaConnection.Password;
         }

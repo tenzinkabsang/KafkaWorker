@@ -67,13 +67,15 @@ public record KafkaWorkerConfig
 
     /// <summary>
     /// Optional UTC timestamp from which the dead letter consumer should start processing messages
-    /// when no committed offsets exist for its consumer group. Use this when enabling the DLQ
-    /// consumer after the system has been running to avoid reprocessing old messages.
+    /// on partitions that have no committed offset for its consumer group. Use this when enabling
+    /// the DLQ consumer after the system has been running to avoid reprocessing old messages.
     /// </summary>
     /// <remarks>
-    /// When set, the DLQ consumer uses Kafka's <c>OffsetsForTimes</c> API to seek to the first
-    /// message at or after this timestamp on first startup. Once offsets are committed, this
-    /// setting has no effect. When <c>null</c> (default), the consumer starts from the earliest
+    /// When set, the DLQ consumer uses Kafka's <c>OffsetsForTimes</c> API to seek each partition
+    /// without a committed offset to the first message at or after this timestamp; partitions with
+    /// a committed offset resume from it and are unaffected. If the timestamp is newer than every
+    /// message in a partition, that partition starts at the end (new messages only). When
+    /// <c>null</c> (default), partitions without a committed offset start from the earliest
     /// available message (<c>AutoOffsetReset.Earliest</c>).
     /// The value must include a UTC offset (e.g., suffix with <c>Z</c> or <c>+00:00</c>).
     /// Values without an explicit offset will be interpreted using the server's local timezone.

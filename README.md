@@ -204,8 +204,11 @@ Configure under `KafkaWorker:Connection`. Shared by all consumers and producers 
 | `IsSecuredCluster` | `bool` | `false` | Whether the cluster requires SASL/SSL authentication. When `true`, `Username` and `Password` are required |
 | `Username` | `string?` | `null` | SASL username (required when `IsSecuredCluster` is `true`) |
 | `Password` | `string?` | `null` | SASL password (required when `IsSecuredCluster` is `true`) |
+| `SaslMechanism` | `string` | `ScramSha512` | SASL mechanism for secured clusters. Accepted values (case-insensitive): `Plain`, `ScramSha256`, `ScramSha512`, `Gssapi`, `OAuthBearer`. Use `Plain` for Confluent Cloud API keys |
+| `SchemaRegistryUsername` | `string?` | `null` | Schema Registry basic-auth username (e.g. Confluent Cloud SR API key). Set together with `SchemaRegistryPassword` |
+| `SchemaRegistryPassword` | `string?` | `null` | Schema Registry basic-auth password (e.g. Confluent Cloud SR API secret). Set together with `SchemaRegistryUsername` |
 
-Example with a secured cluster and Schema Registry:
+Example with a secured cluster and Schema Registry (Confluent Cloud style):
 
 ```json
 {
@@ -213,9 +216,12 @@ Example with a secured cluster and Schema Registry:
     "Connection": {
       "BootstrapServers": "broker1:9092,broker2:9092",
       "IsSecuredCluster": true,
+      "SaslMechanism": "Plain",
       "Username": "<username>",
       "Password": "<password>",
-      "SchemaRegistryUrls": "http://schema-registry:8081"
+      "SchemaRegistryUrls": "http://schema-registry:8081",
+      "SchemaRegistryUsername": "<sr-api-key>",
+      "SchemaRegistryPassword": "<sr-api-secret>"
     }
   }
 }
@@ -334,6 +340,8 @@ builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(
 
 The callback runs before the library enforces its invariants — `EnableAutoCommit` and `EnableAutoOffsetStore` are always set to `false` after your callback, since the library manages offsets manually.
 
+An optional `Action<ProducerConfig>` callback (`configureProducer`) is also available on all registration methods to customize the producer used for dead letter publishing.
+
 > **Default:** The consumer uses `AutoOffsetReset.Latest`, meaning a brand-new consumer group (or one with expired offsets) will skip all existing messages and only process new ones. Override to `Earliest` if you need to process historical messages on first deploy.
 
 ## Metrics
@@ -344,11 +352,11 @@ The library emits [OpenTelemetry-compatible metrics](https://learn.microsoft.com
 
 | Instrument | Type | Tags | Description |
 |------------|------|------|-------------|
-| `kafkaworker.messages.processed` | Counter | `topic`, `status` (`success`, `invalid`, `failed`) | Messages processed |
+| `kafkaworker.messages.processed` | Counter | `topic`, `status` (`success`, `invalid`, `failed`, `deserialization_failed`) | Messages processed |
 | `kafkaworker.messages.processing_duration` | Histogram (ms) | `topic` | Processing duration per message |
-| `kafkaworker.messages.dlq_published` | Counter | `topic`, `dlq_topic` | Messages published to DLQ |
+| `kafkaworker.messages.dlq_published` | Counter | `topic`, `dlq_topic`, `reason` (`processing_failed`, `invalid`, `reprocess_failed`) | Messages published to DLQ |
 | `kafkaworker.dlq.messages_reprocessed` | Counter | `dlq_topic` | Messages reprocessed in place from DLQ |
-| `kafkaworker.dlq.messages_skipped` | Counter | `topic`, `reason` (`invalid`, `max_attempts`) | Messages skipped during DLQ reprocessing |
+| `kafkaworker.dlq.messages_skipped` | Counter | `dlq_topic`, `reason` (`invalid`, `max_attempts`, `deserialization_failed`) | Messages skipped during DLQ reprocessing |
 
 ### Subscribing to Metrics
 
@@ -368,6 +376,8 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 ## Important Notes
 
 - **Scoped DI per message** — `IMessageHandler<TMessage>` is resolved in a new DI scope for each message. Scoped dependencies like EF Core `DbContext` work naturally via constructor injection.
+- **Poison messages are skipped, not fatal** — A message that fails deserialization never reaches your handler, so it cannot be retried or sent to the DLQ. The consumer logs it at `Critical` (with topic/partition/offset), emits a `deserialization_failed` metric, commits past it, and keeps going — one bad payload cannot crash the host or wedge the DLQ.
+- **Tombstones commit and continue** — Null-value messages (e.g. compaction tombstones) are skipped without invoking the handler, but their offsets are committed so the consumer always advances.
 - **DLQ is best-effort from the main consumer** — The main consumer attempts to publish failed messages to the DLQ with Polly retry, but if all attempts fail it logs at `Critical`, commits the offset, and moves on. Processing incoming records takes priority over guaranteeing every failed message reaches the DLQ.
 - **DLQ consumer preserves messages on failure** — Unlike the main consumer, if the DLQ consumer fails to re-enqueue a message back to the DLQ, it stops the batch without committing. The message will be retried on the next scheduled run.
 - **In-place reprocessing requires a handler** — The DLQ consumer invokes `IMessageHandler<TMessage>` directly, so register the consumer (`AddKafkaWorker`) before `AddKafkaWorkerDeadLetter`. Registration throws at startup if the handler is missing.
@@ -377,7 +387,7 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 ## What the Library Handles
 
 - Consumer subscription, consume loop, and graceful shutdown
-- `StoreOffset()` + `Commit()` after every message (success, DLQ publish, or DLQ publish failure)
+- `StoreOffset()` + `Commit()` after every message (success, DLQ publish, DLQ publish failure, tombstone, or deserialization failure)
 - Retry with exponential backoff and jitter (Polly)
 - Publishing to DLQ with tracking headers (`original-topic`, `error-message`, `invalid-message`, `batch-id`, `reprocessed-attempt`)
 - DLQ reprocessing on a timer with loop detection

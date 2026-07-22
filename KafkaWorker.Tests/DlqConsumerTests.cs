@@ -68,7 +68,7 @@ public class DlqConsumerTests : IDisposable
         };
 
         var optionsMonitor = Substitute.For<IOptionsMonitor<KafkaWorkerConfig>>();
-        optionsMonitor.Get(nameof(TestMessage)).Returns(config);
+        optionsMonitor.Get(typeof(TestMessage).FullName).Returns(config);
         var consumerFactory = new TestDlqConsumerFactory(_kafkaConsumer);
 
         var serviceProvider = Substitute.For<IServiceProvider>();
@@ -124,6 +124,24 @@ public class DlqConsumerTests : IDisposable
             },
             IsPartitionEOF = false
         };
+    }
+
+    /// <summary>
+    /// Creates a ConsumeException representing a DLQ record that failed value deserialization.
+    /// </summary>
+    private static ConsumeException CreatePoisonException(
+        long offset = 3,
+        ErrorCode code = ErrorCode.Local_ValueDeserialization)
+    {
+        return new ConsumeException(
+            new ConsumeResult<byte[], byte[]>
+            {
+                Topic = TestDlqTopic,
+                Partition = new Partition(0),
+                Offset = new Offset(offset),
+                Message = new Message<byte[], byte[]>()
+            },
+            new Error(code));
     }
 
     private static bool HasHeader(Headers? headers, string key, string expectedValue)
@@ -332,10 +350,10 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_StopsOnNullMessageValue()
+    public async Task ProcessBatch_NullValueMessage_CommitsAndContinues()
     {
         var sut = CreateConsumer();
-        var nullValueResult = new ConsumeResult<string, TestMessage>
+        var tombstone = new ConsumeResult<string, TestMessage>
         {
             Topic = TestDlqTopic,
             Partition = new Partition(0),
@@ -343,13 +361,17 @@ public class DlqConsumerTests : IDisposable
             Message = new Message<string, TestMessage> { Key = TestMessageKey, Value = null! },
             IsPartitionEOF = false
         };
-        SetupConsumeSequence(nullValueResult);
+        var validMsg = CreateDlqConsumeResult(key: "after-tombstone");
+        SetupConsumeSequence(tombstone, validMsg);
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
 
-        await _messageHandler.DidNotReceive()
-            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
-        _kafkaConsumer.DidNotReceive().Commit();
+        // A tombstone must not end the batch (that would wedge the DLQ at its offset forever);
+        // it is committed past and the batch continues with the next message.
+        _kafkaConsumer.Received(1).StoreOffset(tombstone);
+        await _messageHandler.Received(1)
+            .HandleMessageAsync(validMsg.Message.Value, Arg.Any<CancellationToken>());
+        _kafkaConsumer.Received(2).Commit();
     }
 
     [Fact]
@@ -393,6 +415,61 @@ public class DlqConsumerTests : IDisposable
         // EOF stops the batch, so the message after it is never processed
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
+    }
+
+    #endregion
+
+    #region Poison messages - deserialization failures skip and commit
+
+    [Fact]
+    public async Task ProcessBatch_ConsumeException_SkipsPoisonMessage_AndContinuesBatch()
+    {
+        var sut = CreateConsumer();
+        var validMsg = CreateDlqConsumeResult(key: "after-poison");
+        var callIndex = 0;
+        _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
+            .Returns(_ =>
+            {
+                var call = callIndex++;
+                if (call == 0)
+                    throw CreatePoisonException(offset: 3);
+                if (call == 1)
+                    return validMsg;
+                return null!;
+            });
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        // Committed past the poison record (failed offset + 1) and kept processing the batch
+        _kafkaConsumer.Received(1).StoreOffset(Arg.Is<TopicPartitionOffset>(t =>
+            t.Topic == TestDlqTopic && t.Partition.Value == 0 && t.Offset.Value == 4));
+        await _messageHandler.Received(1)
+            .HandleMessageAsync(validMsg.Message.Value, Arg.Any<CancellationToken>());
+        _kafkaConsumer.Received(2).Commit();
+        _kafkaConsumer.Received(1).Close();
+    }
+
+    [Fact]
+    public async Task ProcessBatch_ConsumeException_NoRecordOffset_EndsBatchWithoutCommit()
+    {
+        var sut = CreateConsumer();
+        _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
+            .Returns(_ => throw new ConsumeException(
+                new ConsumeResult<byte[], byte[]>
+                {
+                    Topic = TestDlqTopic,
+                    Partition = new Partition(0),
+                    Offset = Offset.Unset,
+                    Message = new Message<byte[], byte[]>()
+                },
+                new Error(ErrorCode.UnknownTopicOrPart)));
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        // No offset to skip past — the batch ends cleanly and retries on the next tick
+        _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<TopicPartitionOffset>());
+        _kafkaConsumer.DidNotReceive().Commit();
+        _kafkaConsumer.Received(1).Close();
     }
 
     #endregion

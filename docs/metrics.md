@@ -24,9 +24,9 @@ The library emits [OpenTelemetry-compatible metrics](https://learn.microsoft.com
 |------------|------|------|-------------|
 | `kafkaworker.messages.processed` | Counter | `topic`, `status` | Messages processed by the main consumer |
 | `kafkaworker.messages.processing_duration` | Histogram (ms) | `topic` | Processing duration per message |
-| `kafkaworker.messages.dlq_published` | Counter | `topic`, `dlq_topic` | Messages published to the dead letter queue |
+| `kafkaworker.messages.dlq_published` | Counter | `topic`, `dlq_topic`, `reason` | Messages published to the dead letter queue |
 | `kafkaworker.dlq.messages_reprocessed` | Counter | `dlq_topic` | Messages successfully reprocessed in place from the DLQ |
-| `kafkaworker.dlq.messages_skipped` | Counter | `topic`, `reason` | Messages skipped during DLQ reprocessing |
+| `kafkaworker.dlq.messages_skipped` | Counter | `dlq_topic`, `reason` | Messages skipped during DLQ reprocessing |
 
 ### Tag Values
 
@@ -34,10 +34,17 @@ The library emits [OpenTelemetry-compatible metrics](https://learn.microsoft.com
 - `success` — Message processed successfully
 - `invalid` — Message rejected via `InvalidMessageException`
 - `failed` — Message failed after all retries
+- `deserialization_failed` — Message could not be deserialized; skipped and committed past (never reaches the handler or the DLQ)
+
+**`reason`** (on `messages.dlq_published`):
+- `processing_failed` — Message failed after all retries in the main consumer
+- `invalid` — Message rejected via `InvalidMessageException` in the main consumer
+- `reprocess_failed` — Message failed in-place DLQ reprocessing and was re-enqueued to the DLQ
 
 **`reason`** (on `dlq.messages_skipped`):
 - `invalid` — Message marked as invalid (will never succeed)
 - `max_attempts` — Message exceeded the maximum reprocess attempts
+- `deserialization_failed` — DLQ record could not be deserialized; skipped and committed past
 
 ---
 

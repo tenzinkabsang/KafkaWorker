@@ -8,6 +8,9 @@
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<PackageId>KafkaWorker.Avro</PackageId>
 		<Description>Avro deserialization add-on for KafkaWorker. Adds AddKafkaWorkerAvro registration using Confluent Schema Registry. Requires the KafkaWorker package.</Description>
+		<PackageLicenseExpression>MIT</PackageLicenseExpression>
+		<IncludeSymbols>true</IncludeSymbols>
+		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
 		<RepositoryUrl>https://github.com/tenzinkabsang/KafkaWorker</RepositoryUrl>
 		<Authors>Tenzin Kabsang</Authors>
 		<PackageTags>kafka;consumer;avro;schema-registry;kafkaworker</PackageTags>
@@ -25,11 +28,11 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+		<PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.301" PrivateAssets="All" />
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Confluent.SchemaRegistry.Serdes.Avro" Version="2.13.0" />
+		<PackageReference Include="Confluent.SchemaRegistry.Serdes.Avro" Version="2.15.0" />
 	</ItemGroup>
 
 </Project>

@@ -1,5 +1,7 @@
+using Confluent.Kafka;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using NSubstitute;
 
 namespace KafkaWorker.Tests;
 
@@ -78,5 +80,99 @@ public class ServiceCollectionExtensionsTests
             () => { services.AddKafkaWorker<MessageB, HandlerB>(config, configSection: "KafkaWorker:ConsumerB"); });
 
         Assert.Null(exception);
+    }
+
+    [Fact]
+    public void ApplySecurityConfig_SecuredCluster_UsesConfiguredSaslMechanism()
+    {
+        var connection = new KafkaConnectionConfig
+        {
+            BootstrapServers = "localhost:9092",
+            IsSecuredCluster = true,
+            Username = "user",
+            Password = "pass",
+            SaslMechanism = SaslMechanism.Plain
+        };
+        var clientConfig = new ConsumerConfig();
+
+        ServiceCollectionExtensions.ApplySecurityConfig(clientConfig, connection);
+
+        Assert.Equal(SecurityProtocol.SaslSsl, clientConfig.SecurityProtocol);
+        Assert.Equal(SaslMechanism.Plain, clientConfig.SaslMechanism);
+        Assert.Equal("user", clientConfig.SaslUsername);
+        Assert.Equal("pass", clientConfig.SaslPassword);
+    }
+
+    [Fact]
+    public void ApplySecurityConfig_SecuredCluster_DefaultsToScramSha512()
+    {
+        var connection = new KafkaConnectionConfig
+        {
+            BootstrapServers = "localhost:9092",
+            IsSecuredCluster = true,
+            Username = "user",
+            Password = "pass"
+        };
+        var clientConfig = new ConsumerConfig();
+
+        ServiceCollectionExtensions.ApplySecurityConfig(clientConfig, connection);
+
+        Assert.Equal(SaslMechanism.ScramSha512, clientConfig.SaslMechanism);
+    }
+
+    [Fact]
+    public void ApplySecurityConfig_UnsecuredCluster_DoesNotSetSecuritySettings()
+    {
+        var connection = new KafkaConnectionConfig { BootstrapServers = "localhost:9092" };
+        var clientConfig = new ConsumerConfig();
+
+        ServiceCollectionExtensions.ApplySecurityConfig(clientConfig, connection);
+
+        Assert.Null(clientConfig.SecurityProtocol);
+        Assert.Null(clientConfig.SaslMechanism);
+    }
+
+    [Fact]
+    public void AddKafkaWorker_ConfigureProducer_IsAppliedWhenProducerIsBuilt()
+    {
+        var services = new ServiceCollection();
+        var config = CreateConfiguration();
+        var callbackInvoked = false;
+
+        services.AddKafkaWorker<MessageA, HandlerA>(config, configureProducer: producerConfig =>
+        {
+            callbackInvoked = true;
+            producerConfig.MessageTimeoutMs = 1234;
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var lazyProducer = provider.GetRequiredService<Lazy<IProducer<string, MessageA>>>();
+
+        Assert.False(callbackInvoked);
+        _ = lazyProducer.Value;
+        Assert.True(callbackInvoked);
+    }
+
+    [Fact]
+    public void AddKafkaWorker_ProducerNotCreated_UntilLazyValueAccessed()
+    {
+        var services = new ServiceCollection();
+        var config = CreateConfiguration();
+        var producerCreated = false;
+
+        // Pre-register a flagging producer factory; AddKafkaWorker's TryAdd defers to it.
+        services.AddSingleton<IProducer<string, MessageA>>(sp =>
+        {
+            producerCreated = true;
+            return Substitute.For<IProducer<string, MessageA>>();
+        });
+        services.AddKafkaWorker<MessageA, HandlerA>(config);
+
+        using var provider = services.BuildServiceProvider();
+        var lazyProducer = provider.GetRequiredService<Lazy<IProducer<string, MessageA>>>();
+
+        Assert.False(producerCreated);
+        _ = lazyProducer.Value;
+        Assert.True(producerCreated);
     }
 }

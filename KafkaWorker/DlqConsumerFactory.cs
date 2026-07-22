@@ -18,7 +18,7 @@ internal sealed class DlqConsumerFactory<TKey, TMessage>(
 {
     private readonly ConsumerConfig _consumerConfig = serviceProvider
         .GetRequiredKeyedService<ConsumerConfig>(ServiceCollectionExtensions.GetDlqConfigKey<TMessage>());
-    private readonly KafkaWorkerConfig _kafkaConfig = kafkaConfigMonitor.Get(typeof(TMessage).Name);
+    private readonly KafkaWorkerConfig _kafkaConfig = kafkaConfigMonitor.Get(typeof(TMessage).FullName);
 
     private static readonly TimeSpan _brokerRequestTimeout = TimeSpan.FromSeconds(10);
 
@@ -26,23 +26,50 @@ internal sealed class DlqConsumerFactory<TKey, TMessage>(
     {
         var builder = new ConsumerBuilder<TKey, TMessage>(_consumerConfig)
             .SetValueDeserializer(deserializer)
-            .SetLogHandler((_, logMessage) => logger.LogDebug(logMessage.Message))
-            .SetErrorHandler((_, error) => logger.LogError(error.Reason));
+            .SetLogHandler((_, logMessage) => KafkaClientLogging.LogClientMessage(logger, logMessage.Name, logMessage.Message))
+            .SetErrorHandler((_, error) => KafkaClientLogging.LogClientError(logger, error.Reason, error.IsFatal));
 
         var startFrom = _kafkaConfig.DeadLetterStartFrom;
         if (startFrom.HasValue)
         {
             builder.SetPartitionsAssignedHandler((consumer, partitions) =>
-            {
-                var committed = consumer.Committed(partitions, _brokerRequestTimeout);
-                if (committed.Any(c => c.Offset != Offset.Unset))
-                    return committed;
-
-                var timestamps = partitions.Select(tp => new TopicPartitionTimestamp(tp, new Timestamp(startFrom.Value)));
-                return consumer.OffsetsForTimes(timestamps, _brokerRequestTimeout);
-            });
+                ResolveStartOffsets(consumer, partitions, startFrom.Value, _brokerRequestTimeout));
         }
 
         return builder.Build();
+    }
+
+    /// <summary>
+    /// Resolves the start offset for each assigned partition individually: partitions with a
+    /// committed offset resume where they left off, and only partitions without one seek to the
+    /// first offset at or after <paramref name="startFrom"/>. A partition whose newest message is
+    /// older than <paramref name="startFrom"/> resolves to <see cref="Offset.End"/> (new messages only).
+    /// </summary>
+    /// <remarks>
+    /// The decision is per partition — returning <see cref="Offset.Unset"/> for an uncommitted
+    /// partition would fall back to <c>AutoOffsetReset.Earliest</c> and reprocess the entire
+    /// backlog, which is exactly what <see cref="KafkaWorkerConfig.DeadLetterStartFrom"/> exists to avoid.
+    /// </remarks>
+    internal static IEnumerable<TopicPartitionOffset> ResolveStartOffsets(
+        IConsumer<TKey, TMessage> consumer,
+        List<TopicPartition> partitions,
+        DateTimeOffset startFrom,
+        TimeSpan brokerRequestTimeout)
+    {
+        var committed = consumer.Committed(partitions, brokerRequestTimeout);
+
+        var uncommitted = committed.Where(c => c.Offset == Offset.Unset)
+                                   .Select(c => c.TopicPartition)
+                                   .ToList();
+        if (uncommitted.Count == 0)
+            return committed;
+
+        var byTimestamp = consumer
+            .OffsetsForTimes(
+                uncommitted.Select(tp => new TopicPartitionTimestamp(tp, new Timestamp(startFrom))),
+                brokerRequestTimeout)
+            .ToDictionary(t => t.TopicPartition);
+
+        return committed.Select(c => c.Offset == Offset.Unset ? byTimestamp[c.TopicPartition] : c);
     }
 }

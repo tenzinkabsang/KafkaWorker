@@ -94,6 +94,9 @@ Configure under `KafkaWorker:Connection`. Shared by all consumers and producers 
 | `IsSecuredCluster` | `bool` | `false` | Whether the cluster requires SASL/SSL authentication. When `true`, `Username` and `Password` are required |
 | `Username` | `string?` | `null` | SASL username (required when `IsSecuredCluster` is `true`) |
 | `Password` | `string?` | `null` | SASL password (required when `IsSecuredCluster` is `true`) |
+| `SaslMechanism` | `string` | `ScramSha512` | SASL mechanism used when `IsSecuredCluster` is `true`. Accepted values (case-insensitive): `Plain`, `ScramSha256`, `ScramSha512`, `Gssapi`, `OAuthBearer` |
+| `SchemaRegistryUsername` | `string?` | `null` | Schema Registry basic-auth username (e.g. a Confluent Cloud Schema Registry API key). When set, `SchemaRegistryPassword` is required |
+| `SchemaRegistryPassword` | `string?` | `null` | Schema Registry basic-auth password (e.g. a Confluent Cloud Schema Registry API secret). When set, `SchemaRegistryUsername` is required |
 
 ### Secured Cluster Example
 
@@ -113,8 +116,30 @@ Configure under `KafkaWorker:Connection`. Shared by all consumers and producers 
 
 When `IsSecuredCluster` is `true`, the library configures SASL/SSL automatically:
 - `SecurityProtocol = SaslSsl`
-- `SaslMechanism = Plain`
-- `SslEndpointIdentificationAlgorithm = Https`
+- `SaslMechanism = ScramSha512` (default — override with the `SaslMechanism` setting)
+
+### Confluent Cloud Example
+
+Confluent Cloud uses SASL `Plain` with API keys, and separate API keys for Schema Registry:
+
+```json
+{
+  "KafkaWorker": {
+    "Connection": {
+      "BootstrapServers": "<cluster>.confluent.cloud:9092",
+      "IsSecuredCluster": true,
+      "SaslMechanism": "Plain",
+      "Username": "<cluster-api-key>",
+      "Password": "<cluster-api-secret>",
+      "SchemaRegistryUrls": "https://<schema-registry>.confluent.cloud",
+      "SchemaRegistryUsername": "<sr-api-key>",
+      "SchemaRegistryPassword": "<sr-api-secret>"
+    }
+  }
+}
+```
+
+For security settings not covered by configuration (e.g. custom CA locations), use the `configureConsumer` and `configureProducer` callbacks described below.
 
 ---
 
@@ -135,6 +160,20 @@ builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(
 
 The callback runs before the library enforces its invariants — `EnableAutoCommit` and `EnableAutoOffsetStore` are always set to `false` after your callback, since the library manages offsets manually.
 
+## ProducerConfig Overrides
+
+All registration methods also accept an optional `Action<ProducerConfig>` callback to customize the producer used for dead letter publishing:
+
+```csharp
+builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(
+    builder.Configuration,
+    configureProducer: config =>
+    {
+        config.MessageTimeoutMs = 30_000;
+        config.EnableIdempotence = true;
+    });
+```
+
 {: .important }
 > The consumer defaults to `AutoOffsetReset.Latest`, meaning a brand-new consumer group (or one with expired offsets) will skip all existing messages and only process new ones. Override to `Earliest` if you need to process historical messages on first deploy.
 
@@ -146,7 +185,7 @@ The library validates configuration at startup using .NET's `ValidateDataAnnotat
 
 - **Required fields** — `GroupId`, `Topic`, and `BootstrapServers` must be present
 - **Range constraints** — `MaxRetries` must be 0–5, `DeadLetterMaxReprocessAttempts` must be 1–5
-- **Conditional validation** — When `IsSecuredCluster` is `true`, `Username` and `Password` are required
+- **Conditional validation** — When `IsSecuredCluster` is `true`, `Username` and `Password` are required; `SchemaRegistryUsername` and `SchemaRegistryPassword` must be set together
 - **DLQ topic validation** — Calling `AddKafkaWorkerDeadLetter` without a configured `DeadLetterTopic` throws at startup
 
 If any validation fails, the host throws an exception during startup before consuming any messages.

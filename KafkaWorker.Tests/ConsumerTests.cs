@@ -58,7 +58,7 @@ public class ConsumerTests : IDisposable
         };
 
         var optionsMonitor = Substitute.For<IOptionsMonitor<KafkaWorkerConfig>>();
-        optionsMonitor.Get(nameof(TestMessage)).Returns(config);
+        optionsMonitor.Get(typeof(TestMessage).FullName).Returns(config);
 
         var serviceProvider = Substitute.For<IServiceProvider>();
         serviceProvider.GetService(typeof(IMessageHandler<TestMessage>)).Returns(_messageHandler);
@@ -69,7 +69,7 @@ public class ConsumerTests : IDisposable
 
         return new Consumer<string, TestMessage>(
             _kafkaConsumer,
-            _deadLetterProducer,
+            new Lazy<IProducer<string, TestMessage>>(() => _deadLetterProducer),
             scopeFactory,
             optionsMonitor,
             _metrics,
@@ -126,6 +126,24 @@ public class ConsumerTests : IDisposable
             },
             IsPartitionEOF = true
         };
+    }
+
+    /// <summary>
+    /// Creates a ConsumeException representing a record that failed value deserialization.
+    /// </summary>
+    private static ConsumeException CreatePoisonException(
+        long offset = 5,
+        ErrorCode code = ErrorCode.Local_ValueDeserialization)
+    {
+        return new ConsumeException(
+            new ConsumeResult<byte[], byte[]>
+            {
+                Topic = TestTopic,
+                Partition = new Partition(0),
+                Offset = new Offset(offset),
+                Message = new Message<byte[], byte[]>()
+            },
+            new Error(code));
     }
 
     /// <summary>
@@ -380,7 +398,7 @@ public class ConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ExecuteAsync_SkipsMessageWithNullValue()
+    public async Task ExecuteAsync_NullValueMessage_SkipsHandlerButCommitsOffset()
     {
         var sut = CreateConsumer();
         var nullResult = CreateNullMessageResult();
@@ -398,9 +416,11 @@ public class ConsumerTests : IDisposable
         await WaitUntilCancellationRequestedAsync(_cts);
         await sut.StopAsync(CancellationToken.None);
 
+        // Tombstones are never handled, but their offset is committed so the consumer advances
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
-        _kafkaConsumer.DidNotReceive().Commit();
+        _kafkaConsumer.Received(1).StoreOffset(nullResult);
+        _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
@@ -442,8 +462,10 @@ public class ConsumerTests : IDisposable
 
         await _messageHandler.Received(1)
             .HandleMessageAsync(validResult.Message.Value, Arg.Any<CancellationToken>());
+        // The tombstone commits its offset; the EOF result does not
+        _kafkaConsumer.Received(1).StoreOffset(nullResult);
         _kafkaConsumer.Received(1).StoreOffset(validResult);
-        _kafkaConsumer.Received(1).Commit();
+        _kafkaConsumer.Received(2).Commit();
     }
 
     #endregion
@@ -1083,6 +1105,150 @@ public class ConsumerTests : IDisposable
         await _messageHandler.Received(2)
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
         _kafkaConsumer.Received(2).Commit();
+    }
+
+    #endregion
+
+    #region Poison messages - deserialization failures skip and commit
+
+    [Fact]
+    public async Task ConsumeException_PoisonMessage_CommitsPastFailedOffset_AndContinues()
+    {
+        var sut = CreateConsumer();
+        var validResult = CreateConsumeResult();
+        var callIndex = 0;
+        _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var call = callIndex++;
+                if (call == 0)
+                    throw CreatePoisonException(offset: 5);
+                if (call == 1)
+                    return validResult;
+                _cts.Cancel();
+                throw new OperationCanceledException(_cts.Token);
+            });
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        // Committed past the poison record (failed offset + 1), then processed the next message
+        _kafkaConsumer.Received(1).StoreOffset(Arg.Is<TopicPartitionOffset>(t =>
+            t.Topic == TestTopic && t.Partition.Value == 0 && t.Offset.Value == 6));
+        _kafkaConsumer.Received(2).Commit();
+        await _messageHandler.Received(1)
+            .HandleMessageAsync(validResult.Message.Value, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConsumeException_PoisonMessage_DoesNotPublishToDlq()
+    {
+        var sut = CreateConsumer();
+        var callIndex = 0;
+        _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (callIndex++ == 0)
+                    throw CreatePoisonException();
+                _cts.Cancel();
+                throw new OperationCanceledException(_cts.Token);
+            });
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        // The payload cannot be represented as TMessage, so it is never produced anywhere
+        await _deadLetterProducer.DidNotReceive()
+            .ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, TestMessage>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ConsumeException_PoisonMessage_LogsCritical()
+    {
+        var sut = CreateConsumer();
+        var callIndex = 0;
+        _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (callIndex++ == 0)
+                    throw CreatePoisonException();
+                _cts.Cancel();
+                throw new OperationCanceledException(_cts.Token);
+            });
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        _logger.Received().Log(
+            LogLevel.Critical,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("failed to deserialize")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task ConsumeException_UnsetOffset_ContinuesWithoutCommit()
+    {
+        var sut = CreateConsumer();
+        var validResult = CreateConsumeResult();
+        var callIndex = 0;
+        _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                var call = callIndex++;
+                if (call == 0)
+                    throw new ConsumeException(
+                        new ConsumeResult<byte[], byte[]>
+                        {
+                            Topic = TestTopic,
+                            Partition = new Partition(0),
+                            Offset = Offset.Unset,
+                            Message = new Message<byte[], byte[]>()
+                        },
+                        new Error(ErrorCode.UnknownTopicOrPart));
+                if (call == 1)
+                    return validResult;
+                _cts.Cancel();
+                throw new OperationCanceledException(_cts.Token);
+            });
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        // No offset to skip past — nothing stored for the error, only the valid message commits
+        _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<TopicPartitionOffset>());
+        _kafkaConsumer.Received(1).StoreOffset(validResult);
+        _kafkaConsumer.Received(1).Commit();
+    }
+
+    [Fact]
+    public async Task ConsumeException_FatalError_RethrowsAndClosesConsumer()
+    {
+        var sut = CreateConsumer();
+        _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
+            .Returns(_ => throw new ConsumeException(
+                new ConsumeResult<byte[], byte[]>
+                {
+                    Topic = TestTopic,
+                    Partition = new Partition(0),
+                    Offset = new Offset(5),
+                    Message = new Message<byte[], byte[]>()
+                },
+                new Error(ErrorCode.Local_Fatal, "fatal client error", true)));
+
+        await Assert.ThrowsAsync<ConsumeException>(async () =>
+        {
+            await sut.StartAsync(_cts.Token);
+            await sut.ExecuteTask!;
+        });
+
+        _kafkaConsumer.Received(1).Close();
+        _kafkaConsumer.DidNotReceive().Commit();
     }
 
     #endregion

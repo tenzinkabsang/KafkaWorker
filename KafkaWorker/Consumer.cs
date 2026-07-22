@@ -20,13 +20,13 @@ namespace KafkaWorker;
 /// The consumer continues processing subsequent messages even if individual messages fail.</remarks>
 internal sealed partial class Consumer<TKey, TMessage>(
     IConsumer<TKey, TMessage> consumer,
-    IProducer<TKey, TMessage> deadLetterProducer,
+    Lazy<IProducer<TKey, TMessage>> deadLetterProducer,
     IServiceScopeFactory serviceScopeFactory,
     IOptionsMonitor<KafkaWorkerConfig> kafkaConfigMonitor,
     KafkaWorkerMetrics metrics,
     ILogger<Consumer<TKey, TMessage>> logger) : BackgroundService where TMessage : class
 {
-    private readonly KafkaWorkerConfig _kafkaConfig = kafkaConfigMonitor.Get(typeof(TMessage).Name);
+    private readonly KafkaWorkerConfig _kafkaConfig = kafkaConfigMonitor.Get(typeof(TMessage).FullName);
 
     /// <summary>
     /// Gets the maximum number of retry attempts for processing a message.
@@ -55,10 +55,29 @@ internal sealed partial class Consumer<TKey, TMessage>(
 
             while (!stoppingToken.IsCancellationRequested)
             {
-                var consumeResult = consumer.Consume(stoppingToken);
-
-                if (consumeResult?.Message?.Value == null || consumeResult.IsPartitionEOF)
+                ConsumeResult<TKey, TMessage> consumeResult;
+                try
                 {
+                    consumeResult = consumer.Consume(stoppingToken);
+                }
+                catch (ConsumeException ex) when (!ex.Error.IsFatal)
+                {
+                    // A message that cannot be deserialized would otherwise crash the host and
+                    // then be re-consumed on restart, forever. Skip it and commit past it.
+                    SkipPoisonMessage(ex);
+                    continue;
+                }
+
+                if (consumeResult == null || consumeResult.IsPartitionEOF)
+                {
+                    continue;
+                }
+
+                if (consumeResult.Message?.Value == null)
+                {
+                    // Tombstone (null value): nothing to process, but commit so the offset advances.
+                    LogTombstoneSkipped(logger, Topic, consumeResult.Partition.Value, consumeResult.Offset.Value);
+                    CommitOffset(consumeResult);
                     continue;
                 }
 
@@ -161,7 +180,7 @@ internal sealed partial class Consumer<TKey, TMessage>(
 
             // Override headers win; remaining original headers are copied for DLQ processing.
             await DeadLetterPublisher.PublishAsync(
-                deadLetterProducer,
+                deadLetterProducer.Value,
                 DeadLetterTopic,
                 consumerResult.Message.Key,
                 consumerResult.Message.Value,
@@ -171,7 +190,10 @@ internal sealed partial class Consumer<TKey, TMessage>(
                 stoppingToken);
 
             LogSentToDeadLetter(logger, DeadLetterTopic, consumerResult.Message.Key);
-            metrics.DlqPublished.Add(1, new KeyValuePair<string, object?>("topic", Topic), new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic));
+            metrics.DlqPublished.Add(1,
+                new KeyValuePair<string, object?>("topic", Topic),
+                new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic),
+                new KeyValuePair<string, object?>("reason", isInvalidMessage ? "invalid" : "processing_failed"));
         }
         catch (Exception ex)
         {
@@ -185,9 +207,35 @@ internal sealed partial class Consumer<TKey, TMessage>(
         consumer.Commit();
     }
 
+    /// <summary>
+    /// Handles a message that failed to deserialize (poison message). The raw payload cannot be
+    /// represented as <typeparamref name="TMessage"/>, so it cannot be retried or published to the
+    /// DLQ; it is logged at Critical and the offset is committed past it so the consumer survives.
+    /// Consume errors without a record offset (e.g. broker errors) are logged and not committed.
+    /// </summary>
+    private void SkipPoisonMessage(ConsumeException ex)
+    {
+        var record = ex.ConsumerRecord;
+        if (record is not null && record.Offset != Offset.Unset)
+        {
+            LogPoisonMessageSkipped(logger, ex, record.Topic, record.Partition.Value, record.Offset.Value);
+            metrics.MessagesProcessed.Add(1,
+                new KeyValuePair<string, object?>("topic", Topic),
+                new KeyValuePair<string, object?>("status", "deserialization_failed"));
+
+            // StoreOffset(TopicPartitionOffset) stores the given offset verbatim, so +1 to move past the failed record.
+            consumer.StoreOffset(new TopicPartitionOffset(record.TopicPartition, record.Offset + 1));
+            consumer.Commit();
+        }
+        else
+        {
+            LogConsumeError(logger, ex, Topic);
+        }
+    }
+
     // Configure the resilience pipeline for message processing with retry based on the MaxRetries configuration.
     private readonly ResiliencePipeline _messageProcessingResiliencePipeline = BuildRetryPipeline(
-        kafkaConfigMonitor.Get(typeof(TMessage).Name).MaxRetries);
+        kafkaConfigMonitor.Get(typeof(TMessage).FullName).MaxRetries);
 
     private static ResiliencePipeline BuildRetryPipeline(int maxRetries) => maxRetries > 0
         ? new ResiliencePipelineBuilder()
@@ -233,4 +281,13 @@ internal sealed partial class Consumer<TKey, TMessage>(
 
     [LoggerMessage(EventId = 110, Level = LogLevel.Critical, Message = "Failed to publish message to dead letter topic: {DeadLetterTopic}. Message Key: {MessageKey}")]
     private static partial void LogFailedToPublishToDeadLetter(ILogger logger, Exception ex, string? deadLetterTopic, TKey messageKey);
+
+    [LoggerMessage(EventId = 111, Level = LogLevel.Critical, Message = "Skipping message that failed to deserialize; it will NOT be retried or sent to the DLQ. Topic: {Topic}, Partition: {Partition}, Offset: {Offset}")]
+    private static partial void LogPoisonMessageSkipped(ILogger logger, Exception ex, string topic, int partition, long offset);
+
+    [LoggerMessage(EventId = 112, Level = LogLevel.Error, Message = "Consume error on topic {Topic}; no record offset available, continuing without commit")]
+    private static partial void LogConsumeError(ILogger logger, Exception ex, string topic);
+
+    [LoggerMessage(EventId = 113, Level = LogLevel.Debug, Message = "Skipping tombstone (null value) message and committing offset. Topic: {Topic}, Partition: {Partition}, Offset: {Offset}")]
+    private static partial void LogTombstoneSkipped(ILogger logger, string topic, int partition, long offset);
 }

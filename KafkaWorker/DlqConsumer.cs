@@ -34,7 +34,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     ILogger<DlqConsumer<TKey, TMessage>> logger,
     TimeProvider timeProvider) : BackgroundService where TMessage : class
 {
-    private readonly KafkaWorkerConfig _kafkaConfig = kafkaConfigMonitor.Get(typeof(TMessage).Name);
+    private readonly KafkaWorkerConfig _kafkaConfig = kafkaConfigMonitor.Get(typeof(TMessage).FullName);
 
     private int MaxReprocessAttempts => _kafkaConfig.DeadLetterMaxReprocessAttempts;
     private int ProcessingIntervalMinutes => _kafkaConfig.DeadLetterProcessingIntervalMinutes;
@@ -88,11 +88,47 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
             while (!stoppingToken.IsCancellationRequested)
             {
-                var consumeResult = consumer.Consume(TimeSpan.FromSeconds(5));
+                ConsumeResult<TKey, TMessage> consumeResult;
+                try
+                {
+                    consumeResult = consumer.Consume(TimeSpan.FromSeconds(5));
+                }
+                catch (ConsumeException ex) when (!ex.Error.IsFatal)
+                {
+                    var record = ex.ConsumerRecord;
+                    if (record is null || record.Offset == Offset.Unset)
+                    {
+                        // No record offset to skip past — end the batch and retry on the next tick.
+                        LogDlqConsumeError(logger, ex, DeadLetterTopic);
+                        break;
+                    }
 
-                if (consumeResult?.Message?.Value == null || consumeResult.IsPartitionEOF)
+                    // An undeserializable DLQ record would otherwise abort every batch at the same
+                    // offset and wedge the DLQ permanently. Skip it and commit past it.
+                    LogDlqPoisonMessageSkipped(logger, ex, DeadLetterTopic, record.Partition.Value, record.Offset.Value);
+                    metrics.DlqSkipped.Add(1,
+                        new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic),
+                        new KeyValuePair<string, object?>("reason", "deserialization_failed"));
+
+                    // StoreOffset(TopicPartitionOffset) stores the given offset verbatim, so +1 to move past the failed record.
+                    consumer.StoreOffset(new TopicPartitionOffset(record.TopicPartition, record.Offset + 1));
+                    consumer.Commit();
+                    continue;
+                }
+
+                if (consumeResult == null || consumeResult.IsPartitionEOF)
                 {
                     break;
+                }
+
+                if (consumeResult.Message?.Value == null)
+                {
+                    // Tombstone (null value): commit past it and keep processing — treating it as
+                    // batch end would leave the offset behind it and wedge the DLQ forever.
+                    LogDlqTombstoneSkipped(logger, DeadLetterTopic, consumeResult.Partition.Value, consumeResult.Offset.Value);
+                    consumer.StoreOffset(consumeResult);
+                    consumer.Commit();
+                    continue;
                 }
 
                 var messageBatchId = consumeResult.Message.Headers.GetBatchId();
@@ -150,14 +186,14 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
         if (consumeResult.Message.Headers.IsInvalidMessage())
         {
             LogSkippingInvalidMessage(logger, consumeResult.Message.Key);
-            metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "invalid"));
+            metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "invalid"));
             return true;
         }
 
         if (consumeResult.Message.Headers.GetReprocessAttemptCount() >= MaxReprocessAttempts)
         {
             LogExceededMaxReprocessAttempts(logger, MaxReprocessAttempts, consumeResult.Message.Key);
-            metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "max_attempts"));
+            metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "max_attempts"));
             return true;
         }
 
@@ -179,7 +215,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
         {
             // Permanent failure - the message will never succeed, so skip it (commit and move on).
             LogInvalidMessageInPlace(logger, ex, consumeResult.Message.Key);
-            metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "invalid"));
+            metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "invalid"));
             return true;
         }
         catch (Exception ex)
@@ -222,7 +258,10 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                 stoppingToken);
 
             LogReEnqueuedToDeadLetter(logger, consumeResult.Message.Key, nextAttempt);
-            metrics.DlqPublished.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "reprocess_failed"));
+            metrics.DlqPublished.Add(1,
+                new KeyValuePair<string, object?>("topic", _kafkaConfig.Topic),
+                new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic),
+                new KeyValuePair<string, object?>("reason", "reprocess_failed"));
             return true;
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -280,4 +319,13 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
     [LoggerMessage(EventId = 217, Level = LogLevel.Error, Message = "Failed to re-enqueue message to dead letter topic. Key: {MessageKey}")]
     private static partial void LogFailedToReEnqueue(ILogger logger, Exception ex, TKey messageKey);
+
+    [LoggerMessage(EventId = 218, Level = LogLevel.Critical, Message = "Skipping DLQ message that failed to deserialize. DLQ Topic: {DeadLetterTopic}, Partition: {Partition}, Offset: {Offset}")]
+    private static partial void LogDlqPoisonMessageSkipped(ILogger logger, Exception ex, string? deadLetterTopic, int partition, long offset);
+
+    [LoggerMessage(EventId = 219, Level = LogLevel.Error, Message = "Consume error on DLQ topic {DeadLetterTopic}; no record offset available. Ending batch.")]
+    private static partial void LogDlqConsumeError(ILogger logger, Exception ex, string? deadLetterTopic);
+
+    [LoggerMessage(EventId = 220, Level = LogLevel.Debug, Message = "Skipping tombstone (null value) DLQ message and committing offset. DLQ Topic: {DeadLetterTopic}, Partition: {Partition}, Offset: {Offset}")]
+    private static partial void LogDlqTombstoneSkipped(ILogger logger, string? deadLetterTopic, int partition, long offset);
 }

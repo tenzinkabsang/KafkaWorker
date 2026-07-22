@@ -22,14 +22,17 @@ public static class ServiceCollectionExtensions
     /// <param name="configuration">The application configuration containing Kafka settings.</param>
     /// <param name="configSection">The configuration section path for consumer settings. Defaults to <c>KafkaWorker:Consumer</c>.</param>
     /// <param name="configureConsumer">Optional callback to configure the underlying Confluent <see cref="ConsumerConfig"/>.</param>
+    /// <param name="configureProducer">Optional callback to configure the underlying Confluent <see cref="ProducerConfig"/>
+    /// used for dead letter publishing.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddKafkaWorkerProtobuf<TMessage, THandler>(
         this IServiceCollection services, IConfiguration configuration,
         string configSection = KafkaWorkerConfig.Section,
-        Action<ConsumerConfig>? configureConsumer = null)
+        Action<ConsumerConfig>? configureConsumer = null,
+        Action<ProducerConfig>? configureProducer = null)
         where TMessage : class, Google.Protobuf.IMessage<TMessage>, new()
         where THandler : class, IMessageHandler<TMessage>
-        => AddKafkaWorkerProtobuf<string, TMessage, THandler>(services, configuration, configSection, configureConsumer);
+        => AddKafkaWorkerProtobuf<string, TMessage, THandler>(services, configuration, configSection, configureConsumer, configureProducer);
 
     /// <inheritdoc cref="AddKafkaWorkerProtobuf{TMessage, THandler}"/>
     /// <typeparam name="TKey">The message key type.</typeparam>
@@ -38,36 +41,45 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddKafkaWorkerProtobuf<TKey, TMessage, THandler>(
         this IServiceCollection services, IConfiguration configuration,
         string configSection = KafkaWorkerConfig.Section,
-        Action<ConsumerConfig>? configureConsumer = null)
+        Action<ConsumerConfig>? configureConsumer = null,
+        Action<ProducerConfig>? configureProducer = null)
         where TMessage : class, Google.Protobuf.IMessage<TMessage>, new()
         where THandler : class, IMessageHandler<TMessage>
     {
-        var schemaRegistry = GetSchemaRegistry(services, configuration);
+        RegisterSchemaRegistryClient(services, configuration);
 
         services.TryAddSingleton<IDeserializer<TMessage>>(sp =>
             new ProtobufDeserializer<TMessage>().AsSyncOverAsync());
 
-        KafkaWorker.ServiceCollectionExtensions.RegisterProducer<TKey, TMessage>(services, configuration, b =>
+        KafkaWorker.ServiceCollectionExtensions.RegisterProducer<TKey, TMessage>(services, configuration, (sp, b) =>
         {
-            b.SetValueSerializer(new ProtobufSerializer<TMessage>(schemaRegistry).AsSyncOverAsync());
-        });
+            b.SetValueSerializer(new ProtobufSerializer<TMessage>(sp.GetRequiredService<ISchemaRegistryClient>()).AsSyncOverAsync());
+        }, configureProducer);
 
         return KafkaWorker.ServiceCollectionExtensions.RegisterHostedConsumer<TKey, TMessage, THandler>(
-            services, configuration, configSection, configureConsumer, b =>
+            services, configuration, configSection, configureConsumer, (sp, b) =>
             {
-                b.SetValueDeserializer(new ProtobufDeserializer<TMessage>().AsSyncOverAsync());
+                b.SetValueDeserializer(sp.GetRequiredService<IDeserializer<TMessage>>());
             });
     }
 
-    private static CachedSchemaRegistryClient GetSchemaRegistry(IServiceCollection services, IConfiguration configuration)
+    /// <summary>
+    /// Registers a shared <see cref="ISchemaRegistryClient"/> unless the application has already
+    /// registered one (any registration style is honored). Applies basic-auth credentials from
+    /// <see cref="KafkaConnectionConfig"/> when configured.
+    /// </summary>
+    private static void RegisterSchemaRegistryClient(IServiceCollection services, IConfiguration configuration)
     {
-        var existing = services.FirstOrDefault(s => s.ServiceType == typeof(ISchemaRegistryClient));
-        if (existing?.ImplementationInstance is CachedSchemaRegistryClient cached)
-            return cached;
-
-        var kafkaConnection = KafkaWorker.ServiceCollectionExtensions.GetKafkaConnectionConfig(configuration);
-        var schemaRegistry = new CachedSchemaRegistryClient(new SchemaRegistryConfig { Url = kafkaConnection.SchemaRegistryUrls });
-        services.TryAddSingleton<ISchemaRegistryClient>(schemaRegistry);
-        return schemaRegistry;
+        services.TryAddSingleton<ISchemaRegistryClient>(sp =>
+        {
+            var kafkaConnection = KafkaWorker.ServiceCollectionExtensions.GetKafkaConnectionConfig(configuration);
+            var schemaRegistryConfig = new SchemaRegistryConfig { Url = kafkaConnection.SchemaRegistryUrls };
+            if (!string.IsNullOrWhiteSpace(kafkaConnection.SchemaRegistryUsername))
+            {
+                schemaRegistryConfig.BasicAuthCredentialsSource = AuthCredentialsSource.UserInfo;
+                schemaRegistryConfig.BasicAuthUserInfo = $"{kafkaConnection.SchemaRegistryUsername}:{kafkaConnection.SchemaRegistryPassword}";
+            }
+            return new CachedSchemaRegistryClient(schemaRegistryConfig);
+        });
     }
 }

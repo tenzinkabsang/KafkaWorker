@@ -145,6 +145,10 @@ A message is skipped (not reprocessed) if:
 
 - It was marked as an **invalid message** (`invalid-message` header is `"true"`)
 - It has exceeded the **maximum reprocess attempts** (`reprocessed-attempt` header ≥ configured max)
+- It is a **tombstone** (null value) — committed past without invoking the handler
+- It **cannot be deserialized** — logged at `Critical`, committed past, and counted in the `dlq.messages_skipped` metric with reason `deserialization_failed`
+
+Tombstones and undeserializable records never end the batch — they are committed past so the DLQ consumer always makes progress.
 
 ### Loop Detection
 
@@ -153,6 +157,8 @@ Each reprocessing batch gets a unique `batch-id`. When the consumer encounters a
 ### Error Handling
 
 Unlike the main consumer, the DLQ consumer **preserves messages on failure**. If re-enqueuing a failed message back to the DLQ fails, it stops the batch without committing. The message will be retried on the next scheduled run.
+
+A consume error that carries no record offset (e.g. a transient broker error) also ends the batch without committing; the batch is retried on the next tick.
 
 {: .important }
 > **Single partition DLQ** — For optimal performance, configure the dead letter topic with a single partition.
@@ -170,7 +176,7 @@ When enabling DLQ reprocessing for a system that has been running, you may not w
 }
 ```
 
-The DLQ consumer uses Kafka's `OffsetsForTimes` API to seek to the first message at or after this timestamp on first startup. Once offsets are committed, this setting has no effect.
+The DLQ consumer uses Kafka's `OffsetsForTimes` API to seek to the first message at or after this timestamp. The decision is made **per partition**: only partitions with no committed offset seek by timestamp — partitions that already have a committed offset resume from it and are unaffected. If the timestamp is newer than every message in a partition, that partition starts at the end (new messages only).
 
 ---
 

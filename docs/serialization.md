@@ -116,6 +116,29 @@ When using the 2-type-parameter overload (`<TMessage, THandler>`), the key type 
 
 ---
 
+## Schema Registry Authentication
+
+For registries that require basic auth (e.g. Confluent Cloud), set `SchemaRegistryUsername` and `SchemaRegistryPassword` in the connection config:
+
+```json
+{
+  "KafkaWorker": {
+    "Connection": {
+      "BootstrapServers": "<cluster>.confluent.cloud:9092",
+      "SchemaRegistryUrls": "https://<schema-registry>.confluent.cloud",
+      "SchemaRegistryUsername": "<sr-api-key>",
+      "SchemaRegistryPassword": "<sr-api-secret>"
+    }
+  }
+}
+```
+
+Both values must be set together — configuration validation fails at startup if only one is present.
+
+---
+
 ## Schema Registry Client Sharing
 
-When you register multiple consumers that use Schema Registry (Avro, Protobuf, or JSON Schema), the library automatically shares a single `CachedSchemaRegistryClient` instance across all registrations. You don't need to configure anything — the first registration creates the client, and subsequent registrations reuse it.
+When you register multiple consumers that use Schema Registry (Avro, Protobuf, or JSON Schema), the library automatically shares a single `ISchemaRegistryClient` instance across all registrations. You don't need to configure anything — the first registration creates the client, and subsequent registrations reuse it.
+
+If your application registers its own `ISchemaRegistryClient` (any registration style — instance, type, or factory) **before** calling the `AddKafkaWorker*` methods, the library uses that client instead of creating one.

@@ -52,7 +52,7 @@ internal static class DeadLetterPublisher
         }
 
         // Copy remaining source headers, skipping any key we just overrode so we never
-        // emit duplicate headers (e.g. failed-consumer-group-id, reprocessed-attempt).
+        // emit duplicate headers (e.g. batch-id, reprocessed-attempt).
         if (sourceHeaders is not null)
         {
             foreach (var header in sourceHeaders)
