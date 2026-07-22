@@ -36,9 +36,11 @@ dotnet add package KafkaWorker.JsonSchema     # for JSON + Schema Registry
 - **Dead letter queue support** *(optional)* — Failed messages are sent to a DLQ. Leave `DeadLetterTopic` null to disable
 - **Periodic DLQ reprocessing** *(optional)* — Register `AddKafkaWorkerDeadLetter` to automatically retry failed messages on a schedule. Messages are reprocessed **in place** (via your handler) so they never return to the original topic
 - **Invalid message handling** — Skip retries for messages that will never succeed via `InvalidMessageException`
+- **Poison-message resilient** — A message that fails deserialization is logged, counted, and committed past — one bad payload can't crash the host or wedge the DLQ
 - **Multiple serialization formats** — Avro, JSON (plain and with Schema Registry), and Protobuf via separate packages
 - **Multiple consumers per host** — Register several `AddKafkaWorker` calls with different `TMessage` types, each pointing to its own config section
 - **Confluent ConsumerConfig overrides** — Pass an `Action<ConsumerConfig>` callback to customize `AutoOffsetReset`, `SessionTimeoutMs`, and other Confluent settings
+- **Managed-Kafka ready** — Configurable SASL mechanism (`Plain`, SCRAM) and Schema Registry basic auth — works with Confluent Cloud via config alone
 - **Built-in observability** — Emits OpenTelemetry-compatible metrics (`System.Diagnostics.Metrics`) for messages processed, processing duration, and DLQ activity
 - **Configuration validation on startup** — Bad config fails fast before consuming any messages
 
@@ -174,6 +176,8 @@ Or set `MaxRetries` to `0` and omit `DeadLetterTopic` for a simple consumer with
 ```
 
 Messages flow through your `IMessageHandler<TMessage>`. On success, the offset is committed. On failure, the library retries with exponential backoff. If all retries fail, the message is published to the dead letter topic. The DLQ consumer periodically reprocesses those messages by invoking your handler **in place** so failed messages never reappear on the original topic. If reprocessing fails again, the message is re-enqueued to the DLQ for a future attempt (bounded by `DeadLetterMaxReprocessAttempts`).
+
+A message that fails deserialization never enters this flow at all — it is logged at `Critical`, counted in metrics, and committed past so the consumer keeps running.
 
 Throwing `InvalidMessageException` short-circuits this flow — the message goes directly to the DLQ with no retries, and is permanently skipped during DLQ reprocessing.
 

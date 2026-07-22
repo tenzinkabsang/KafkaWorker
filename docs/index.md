@@ -45,9 +45,11 @@ dotnet add package KafkaWorker.JsonSchema     # for JSON + Schema Registry
 - **Dead letter queue support** — Failed messages are sent to a DLQ topic
 - **Periodic DLQ reprocessing** — Automatically retry failed messages on a schedule
 - **Invalid message handling** — Skip retries for messages that will never succeed via `InvalidMessageException`
+- **Poison-message resilient** — Deserialization failures are logged, counted, and skipped — one bad payload can't crash the host
 - **Multiple serialization formats** — Avro, JSON (plain and Schema Registry), and Protobuf
 - **Multiple consumers per host** — Register several consumers with different `TMessage` types
 - **Confluent ConsumerConfig overrides** — Customize `AutoOffsetReset`, `SessionTimeoutMs`, etc.
+- **Managed-Kafka ready** — Configurable SASL mechanism and Schema Registry basic auth (Confluent Cloud friendly)
 - **Built-in observability** — OpenTelemetry-compatible metrics via `System.Diagnostics.Metrics`
 - **Configuration validation on startup** — Bad config fails fast before consuming
 
@@ -162,5 +164,7 @@ That's it — the simplest setup consumes and retries with zero DLQ config. See 
 ```
 
 Messages flow through your `IMessageHandler<TMessage>`. On success, the offset is committed. On failure, the library retries with exponential backoff. If all retries fail, the message is published to the dead letter topic. The DLQ consumer periodically reprocesses those messages by invoking your handler **in place** so failed messages never reappear on the original topic.
+
+A message that fails deserialization never enters this flow at all — it is logged at `Critical`, counted in metrics, and committed past so the consumer keeps running.
 
 Throwing `InvalidMessageException` short-circuits this flow — the message goes directly to the DLQ with no retries, and is permanently skipped during DLQ reprocessing.

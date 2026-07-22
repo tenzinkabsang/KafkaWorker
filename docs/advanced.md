@@ -82,6 +82,10 @@ The scope is disposed after `HandleMessageAsync` completes, which means the `DbC
 | `InvalidMessageException` | Sent directly to DLQ — no retries |
 | `OperationCanceledException` | Propagated for clean shutdown — do not catch this |
 
+### Deserialization Failures (Poison Messages)
+
+A message that cannot be deserialized never reaches your handler — the failure happens inside `Consume()`, before the retry/DLQ pipeline. The consumer logs it at `Critical` (with topic, partition, and offset), emits the `deserialization_failed` metric, commits past the record, and continues. It is not retried and cannot be sent to the DLQ (the payload can't be represented as your message type). Only genuinely fatal Kafka client errors stop the host.
+
 ### Retry Strategy
 
 Retries use **exponential backoff with jitter** (via Polly):
@@ -103,13 +107,15 @@ If you need to throttle calls to a downstream system, add rate limiting inside y
 
 Both the main consumer and DLQ consumer run as hosted services in the same .NET host. The default `BackgroundServiceExceptionBehavior` in .NET 8+ is `StopHost` — a fatal error from either consumer stops the host, and Kubernetes restarts the pod.
 
+Deserialization failures are **not** fatal: they are skipped and committed past (see [Error Handling Rules](#error-handling-rules)), so a poison message cannot put the service into a crash loop. Only fatal Kafka client errors (`Error.IsFatal`) stop the host.
+
 ### Offset Management
 
 The library uses manual offset management:
 1. `StoreOffset()` — marks the offset locally
 2. `Commit()` — commits the stored offset to Kafka
 
-Both are called after every message, whether processing succeeded, the message was sent to the DLQ, or a DLQ publish failed. This ensures the consumer never gets stuck on a single message.
+Both are called after every message, whether processing succeeded, the message was sent to the DLQ, a DLQ publish failed, the message was a tombstone (null value), or it failed deserialization. This ensures the consumer never gets stuck on a single message.
 
 {: .note }
 > Confluent.Kafka's internal consumer position advances on each `Consume()` call regardless of offset commits. Not committing an offset only helps on consumer restart or rebalance — not within the current session.
@@ -125,6 +131,7 @@ You write the `IMessageHandler<TMessage>` — the library handles everything els
 - Retry with exponential backoff and jitter (Polly)
 - Publishing to DLQ with tracking headers
 - DLQ reprocessing on a timer with loop detection
+- Poison-message and tombstone skipping (logged and committed past)
 - Configuration validation on startup
 - Scoped DI per message
 

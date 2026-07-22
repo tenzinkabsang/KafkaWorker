@@ -35,17 +35,19 @@ public class OrderMessageHandler(ILogger<OrderMessageHandler> logger)
 ```json
 {
   "KafkaWorker": {
-    "Consumer": {
+    "Connection": {
       "BootstrapServers": "localhost:9092",
-      "Topic": "orders",
+      "SchemaRegistryUrls": "http://localhost:8081"
+    },
+    "Consumer": {
       "GroupId": "orders-consumer",
-      "SchemaRegistryUrl": "http://localhost:8081"
+      "Topic": "orders"
     }
   }
 }
 ```
 
-`SchemaRegistryUrl` is required. All other KafkaWorker options (retry, DLQ, etc.) work the same as the core package.
+`SchemaRegistryUrls` (under `KafkaWorker:Connection`) is required. For registries that need basic auth (e.g. Confluent Cloud), also set `SchemaRegistryUsername` and `SchemaRegistryPassword`. All other KafkaWorker options (retry, DLQ, etc.) work the same as the core package.
 
 ## Custom Key Type
 
@@ -55,4 +57,4 @@ builder.Services.AddKafkaWorkerRegistryJson<long, OrderMessage, OrderMessageHand
 
 ## Documentation
 
-Full documentation, configuration reference, and DLQ setup at [github.com/tenzinkabsang/KafkaWorker](https://github.com/tenzinkabsang/KafkaWorker).
+Full documentation, configuration reference, and DLQ setup at [tenzinkabsang.github.io/KafkaWorker](https://tenzinkabsang.github.io/KafkaWorker/).

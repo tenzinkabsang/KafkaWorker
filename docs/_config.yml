@@ -22,12 +22,39 @@ kramdown:
 color_scheme: light
 
 search_enabled: true
-search.button: true
+search:
+  button: true
+
+enable_copy_code_button: true
+
+# Styles the {: .note } / {: .important } / {: .warning } callouts used across the docs.
+# Without this map, just-the-docs renders them as plain paragraphs.
+callouts:
+  note:
+    title: Note
+    color: blue
+  important:
+    title: Important
+    color: yellow
+  warning:
+    title: Warning
+    color: red
 
 aux_links:
   "View on GitHub":
     - "https://github.com/tenzinkabsang/KafkaWorker"
 aux_links_new_tab: true
+
+nav_external_links:
+  - title: KafkaWorker on NuGet
+    url: https://www.nuget.org/packages/KafkaWorker/
+
+gh_edit_link: true
+gh_edit_link_text: "Edit this page on GitHub"
+gh_edit_repository: "https://github.com/tenzinkabsang/KafkaWorker"
+gh_edit_branch: "main"
+gh_edit_source: docs
+gh_edit_view_mode: "tree"
 
 footer_content: >-
   KafkaWorker is distributed under the
