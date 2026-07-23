@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - Unreleased
+
+### Added
+
+- **`IDlqReprocessTrigger<TMessage>`** — injectable, zero-configuration service (registered by
+  `AddKafkaWorkerDeadLetter`) that wakes the DLQ consumer to run a reprocessing batch immediately
+  instead of waiting for the next scheduled tick. Repeated triggers coalesce; the regular schedule
+  is unaffected.
+
+### Documentation
+
+- New **"Handling Terminal Failures" runbook** in the DLQ docs: detecting terminal messages via the
+  `dlq.messages_skipped` metric, inspecting them in the DLQ topic, and redriving them by
+  republishing without the tracking headers.
+- New **ordering and idempotency guidance**: dead-lettered messages are retried out of order, so
+  handlers should be idempotent and order-tolerant.
+
 ## [2.1.0] - 2026-07-22
 
 ### Added
@@ -105,6 +122,7 @@ for full migration guidance.
 
 - Last release before the DLQ reprocessing strategy change.
 
+[2.2.0]: https://github.com/tenzinkabsang/KafkaWorker/releases/tag/v2.2.0
 [2.1.0]: https://github.com/tenzinkabsang/KafkaWorker/releases/tag/v2.1.0
 [2.0.0]: https://github.com/tenzinkabsang/KafkaWorker/releases/tag/v2.0.0
 [1.0.4]: https://github.com/tenzinkabsang/KafkaWorker/releases/tag/v1.0.4

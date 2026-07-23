@@ -109,6 +109,19 @@ Requires an `IMessageHandler<TMessage>` to be registered in the same process —
 
 ---
 
+## Ordering and Idempotency
+
+A dead-lettered message is retried **out of order**: by the time it succeeds, later messages for the same key on the original topic have usually been processed already. This is inherent to any DLQ design — a failed message steps out of the partition's ordered stream.
+
+Design your handler accordingly:
+
+- **Idempotent** — reprocessing a message that (partially) succeeded before must not double-apply effects.
+- **Order-tolerant** — a stale message may arrive after newer state was written; guard with timestamps, versions, or upserts where it matters.
+
+If strict per-key ordering is a hard requirement for your domain, don't rely on DLQ recovery for those messages — treat failures as fatal for the key instead (e.g., throw `InvalidMessageException` and handle the key's state out of band).
+
+---
+
 ## InvalidMessageException
 
 Throw `InvalidMessageException` from your `IMessageHandler<TMessage>` for messages that will never succeed:
@@ -165,7 +178,62 @@ A consume error that carries no record offset (e.g. a transient broker error) al
 
 ---
 
-## DeadLetterStartFrom
+## On-Demand Reprocessing
+
+The DLQ consumer normally waits for its configured interval between batches. When you want failed messages retried *right now* — say, a downstream API was down, messages piled into the DLQ, and the API has just been fixed — inject `IDlqReprocessTrigger<TMessage>` (registered automatically by `AddKafkaWorkerDeadLetter`) and call `Trigger()`:
+
+```csharp
+// Example: an admin endpoint in a host that also runs ASP.NET
+app.MapPost("/admin/dlq/reprocess", (IDlqReprocessTrigger<OrderMessage> trigger) =>
+{
+    trigger.Trigger();
+    return Results.Accepted();
+});
+```
+
+`Trigger()` wakes the DLQ consumer immediately and runs one normal batch, then the regular schedule resumes. It is safe to call at any time and from any thread:
+
+- Repeated calls while a trigger is already pending **coalesce** into a single batch.
+- A trigger fired while a batch is running queues exactly one follow-up batch.
+- The entry point is yours to choose — an HTTP endpoint, a console command, a chat-ops bot, a health-check remediation. The library deliberately ships only the injectable service, not an endpoint.
+
+No configuration is involved. If you don't need on-demand retries, a lower `DeadLetterProcessingIntervalMinutes` is the config-only alternative.
+
+---
+
+## Handling Terminal Failures
+
+A message becomes **terminal** when it is marked invalid (`InvalidMessageException`) or exceeds `DeadLetterMaxReprocessAttempts`. Terminal messages are skipped with their offsets committed — but they are **not deleted**: they remain in the DLQ topic until its retention expires. This section is the operational runbook for them.
+
+### Detect
+
+Alert on the skip metric — it fires exactly when a message becomes terminal:
+
+- `kafkaworker.dlq.messages_skipped` with `reason="max_attempts"` — retries exhausted; likely a persistent downstream or data problem worth a human look.
+- `reason="invalid"` — rejected by your own validation; usually indicates a producer bug or schema drift.
+
+### Inspect
+
+Terminal messages sit in the DLQ topic behind the committed offset. Browse the topic with any Kafka tool (kafka-ui, `kcat`, Conduktor) and identify them by their headers: `invalid-message: true`, or `reprocessed-attempt` ≥ your configured max, plus `error-message` and `original-topic` for diagnosis.
+
+{: .note }
+> **Size DLQ retention generously** (days to weeks) — the DLQ topic doubles as your terminal-failure archive. Once retention expires, those messages are gone.
+
+### Redrive
+
+After fixing the root cause, republish the message **value** (and key) back to the DLQ topic **without** the `reprocessed-attempt`, `invalid-message`, and `batch-id` headers — the DLQ consumer then treats it as a fresh failure and reprocesses it on the next tick (or immediately via the [on-demand trigger](#on-demand-reprocessing)). Example with `kcat`:
+
+```bash
+# 1. Find the terminal message (note its partition/offset, inspect headers)
+kcat -C -b localhost:9092 -t orders.v1.dlq -f 'offset=%o headers=%h value=%s\n'
+
+# 2. Republish value+key without the tracking headers
+kcat -C -b localhost:9092 -t orders.v1.dlq -o <offset> -c 1 -K $'\t' -f '%k\t%s\n' \
+  | kcat -P -b localhost:9092 -t orders.v1.dlq -K $'\t'
+```
+
+{: .important }
+> Redriving a message that was marked `invalid-message` only makes sense **after a code or schema fix** — by definition it will fail validation again otherwise.
 
 When enabling DLQ reprocessing for a system that has been running, you may not want to reprocess all historical DLQ messages. Set `DeadLetterStartFrom` to a UTC timestamp:
 

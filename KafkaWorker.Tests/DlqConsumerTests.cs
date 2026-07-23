@@ -21,6 +21,7 @@ public class DlqConsumerTests : IDisposable
     private readonly IMessageHandler<TestMessage> _messageHandler;
     private readonly ILogger<DlqConsumer<string, TestMessage>> _logger;
     private readonly KafkaWorkerMetrics _metrics;
+    private readonly DlqReprocessSignal<TestMessage> _reprocessSignal = new();
     private readonly CancellationTokenSource _cts;
 
     public DlqConsumerTests()
@@ -78,7 +79,7 @@ public class DlqConsumerTests : IDisposable
         var scopeFactory = Substitute.For<IServiceScopeFactory>();
         scopeFactory.CreateScope().Returns(scope);
 
-        return new DlqConsumer<string, TestMessage>(_producer, consumerFactory, scopeFactory, optionsMonitor, _metrics, _logger, timeProvider ?? TimeProvider.System);
+        return new DlqConsumer<string, TestMessage>(_producer, consumerFactory, scopeFactory, optionsMonitor, _metrics, _reprocessSignal, _logger, timeProvider ?? TimeProvider.System);
     }
 
     private static ConsumeResult<string, TestMessage> CreateDlqConsumeResult(
@@ -1061,6 +1062,85 @@ public class DlqConsumerTests : IDisposable
             Arg.Is<object>(o => o.ToString()!.Contains("Error processing dead letter queue batch")),
             Arg.Any<Exception?>(),
             Arg.Any<Func<object, Exception?, string>>());
+
+        await sut.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Trigger_WakesConsumerAndRunsBatch_WithoutAdvancingClock()
+    {
+        var fakeTime = new FakeTimeProvider();
+        var sut = CreateConsumer(timeProvider: fakeTime);
+        _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
+
+        await sut.StartAsync(_cts.Token);
+        await Task.Delay(50); // Let ExecuteAsync reach the wait
+
+        _reprocessSignal.Trigger();
+        await Task.Delay(100); // Let the triggered batch run
+
+        // A batch ran even though the fake clock never advanced
+        _kafkaConsumer.Received(1).Subscribe(TestDlqTopic);
+
+        await sut.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Trigger_RepeatedCallsBeforeBatch_CoalesceIntoOneBatch()
+    {
+        var fakeTime = new FakeTimeProvider();
+        var sut = CreateConsumer(timeProvider: fakeTime);
+        _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
+
+        // Multiple triggers before the consumer starts waiting — must coalesce
+        _reprocessSignal.Trigger();
+        _reprocessSignal.Trigger();
+        _reprocessSignal.Trigger();
+
+        await sut.StartAsync(_cts.Token);
+        await Task.Delay(150);
+
+        _kafkaConsumer.Received(1).Subscribe(TestDlqTopic);
+
+        await sut.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Trigger_AfterTimerTick_RunsImmediateSecondBatch()
+    {
+        var fakeTime = new FakeTimeProvider();
+        var sut = CreateConsumer(timeProvider: fakeTime);
+        _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
+
+        await sut.StartAsync(_cts.Token);
+        await AdvanceTimeAndYieldAsync(fakeTime, TimeSpan.FromMinutes(60));
+        _kafkaConsumer.Received(1).Subscribe(TestDlqTopic);
+
+        _reprocessSignal.Trigger();
+        await Task.Delay(100);
+
+        // The trigger produced a second batch without waiting another interval
+        _kafkaConsumer.Received(2).Subscribe(TestDlqTopic);
+
+        await sut.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Trigger_DoesNotDisturbRegularSchedule()
+    {
+        var fakeTime = new FakeTimeProvider();
+        var sut = CreateConsumer(timeProvider: fakeTime);
+        _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
+
+        await sut.StartAsync(_cts.Token);
+        await Task.Delay(50);
+
+        // Triggered batch, then a normal timer tick afterwards
+        _reprocessSignal.Trigger();
+        await Task.Delay(100);
+        await AdvanceTimeAndYieldAsync(fakeTime, TimeSpan.FromMinutes(60));
+
+        _kafkaConsumer.Received(2).Subscribe(TestDlqTopic);
 
         await sut.StopAsync(CancellationToken.None);
     }

@@ -44,6 +44,7 @@ dotnet add package KafkaWorker.JsonSchema     # for JSON + Schema Registry
 - **Built-in retry with exponential backoff** — Configurable retry attempts (0–5) with jitter
 - **Dead letter queue support** — Failed messages are sent to a DLQ topic
 - **Periodic DLQ reprocessing** — Automatically retry failed messages on a schedule
+- **On-demand DLQ reprocessing** — `IDlqReprocessTrigger<TMessage>` runs a retry batch immediately
 - **Invalid message handling** — Skip retries for messages that will never succeed via `InvalidMessageException`
 - **Poison-message resilient** — Deserialization failures are logged, counted, and skipped — one bad payload can't crash the host
 - **Multiple serialization formats** — Avro, JSON (plain and Schema Registry), and Protobuf

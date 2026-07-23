@@ -151,6 +151,8 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<IDlqConsumerFactory<TKey, TMessage>, DlqConsumerFactory<TKey, TMessage>>();
+        services.TryAddSingleton<DlqReprocessSignal<TMessage>>();
+        services.TryAddSingleton<IDlqReprocessTrigger<TMessage>>(sp => sp.GetRequiredService<DlqReprocessSignal<TMessage>>());
         services.AddHostedService<DlqConsumer<TKey, TMessage>>();
 
         return services;

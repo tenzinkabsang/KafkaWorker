@@ -31,6 +31,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     IServiceScopeFactory serviceScopeFactory,
     IOptionsMonitor<KafkaWorkerConfig> kafkaConfigMonitor,
     KafkaWorkerMetrics metrics,
+    DlqReprocessSignal<TMessage> reprocessSignal,
     ILogger<DlqConsumer<TKey, TMessage>> logger,
     TimeProvider timeProvider) : BackgroundService where TMessage : class
 {
@@ -49,9 +50,26 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
         try
         {
+            // Persists across iterations when the timer wins, so a trigger fired
+            // between ticks is never lost.
+            Task<bool>? triggerRead = null;
+
             while (!stoppingToken.IsCancellationRequested)
             {
-                await Task.Delay(TimeSpan.FromMinutes(ProcessingIntervalMinutes), timeProvider, stoppingToken);
+                triggerRead ??= reprocessSignal.Reader.ReadAsync(stoppingToken).AsTask();
+                var delay = Task.Delay(TimeSpan.FromMinutes(ProcessingIntervalMinutes), timeProvider, stoppingToken);
+
+                var winner = await Task.WhenAny(delay, triggerRead);
+                if (winner == triggerRead)
+                {
+                    await triggerRead;
+                    triggerRead = null;
+                    LogTriggeredBatch(logger, DeadLetterTopic);
+                }
+                else
+                {
+                    await delay;
+                }
 
                 // Each iteration generate a unique guid as an identifier for the batch. This allows us to track which messages have been processed in this batch
                 var batchId = Guid.NewGuid().ToString();
@@ -328,4 +346,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
     [LoggerMessage(EventId = 220, Level = LogLevel.Debug, Message = "Skipping tombstone (null value) DLQ message and committing offset. DLQ Topic: {DeadLetterTopic}, Partition: {Partition}, Offset: {Offset}")]
     private static partial void LogDlqTombstoneSkipped(ILogger logger, string? deadLetterTopic, int partition, long offset);
+
+    [LoggerMessage(EventId = 221, Level = LogLevel.Information, Message = "On-demand reprocess trigger received. Running immediate batch for dead letter topic: {DeadLetterTopic}")]
+    private static partial void LogTriggeredBatch(ILogger logger, string? deadLetterTopic);
 }

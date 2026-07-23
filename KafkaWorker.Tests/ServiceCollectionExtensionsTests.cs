@@ -154,6 +154,39 @@ public class ServiceCollectionExtensionsTests
     }
 
     [Fact]
+    public void AddKafkaWorkerDeadLetter_RegistersReprocessTrigger()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["KafkaWorker:Connection:BootstrapServers"] = "localhost:9092",
+                ["KafkaWorker:Consumer:Topic"] = "test-topic",
+                ["KafkaWorker:Consumer:GroupId"] = "test-group",
+                ["KafkaWorker:Consumer:DeadLetterTopic"] = "test-topic-dlq",
+            })
+            .Build();
+
+        services.AddKafkaWorker<MessageA, HandlerA>(config);
+        services.AddKafkaWorkerDeadLetter<MessageA>(config);
+
+        using var provider = services.BuildServiceProvider();
+
+        Assert.NotNull(provider.GetService<IDlqReprocessTrigger<MessageA>>());
+    }
+
+    [Fact]
+    public void AddKafkaWorker_WithoutDeadLetter_DoesNotRegisterReprocessTrigger()
+    {
+        var services = new ServiceCollection();
+        services.AddKafkaWorker<MessageA, HandlerA>(CreateConfiguration());
+
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Null(provider.GetService<IDlqReprocessTrigger<MessageA>>());
+    }
+
+    [Fact]
     public void AddKafkaWorker_ProducerNotCreated_UntilLazyValueAccessed()
     {
         var services = new ServiceCollection();
