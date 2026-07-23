@@ -7,6 +7,10 @@
       <Project Path="KafkaWorker.Tests/KafkaWorker.Tests.csproj" />
       <Project Path="KafkaWorker.Worker/KafkaWorker.Worker.csproj" Id="8591ddad-2a98-4cf3-ac25-a388afe0b1a9" />
    </Folder>
+   <Folder Name="/Samples/">
+      <Project Path="samples/OrderProcessor/OrderProcessor.csproj" />
+      <Project Path="samples/OrderProducer/OrderProducer.csproj" />
+   </Folder>
    <Project Path="KafkaWorker.Avro/KafkaWorker.Avro.csproj" />
    <Project Path="KafkaWorker.JsonSchema/KafkaWorker.JsonSchema.csproj" />
    <Project Path="KafkaWorker.Protobuf/KafkaWorker.Protobuf.csproj" />

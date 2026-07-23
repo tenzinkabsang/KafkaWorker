@@ -6,7 +6,7 @@
 
 A .NET library that abstracts Kafka consumer infrastructure so you can focus on business logic. Implement `IMessageHandler<TMessage>` and the library handles the consume loop, offset management, retry with exponential backoff, dead letter queuing, and DLQ reprocessing.
 
-📖 **[Full Documentation](https://tenzinkabsang.github.io/KafkaWorker/)** — guides, configuration, and examples.
+📖 **[Full Documentation](https://tenzinkabsang.github.io/KafkaWorker/)** — guides, configuration, and examples. New here? Start with **[Why KafkaWorker?](https://tenzinkabsang.github.io/KafkaWorker/why-kafkaworker)** — the same consumer written with and without the library.
 
 Supports multiple consumers per host, scoped dependency injection per message, Avro / Protobuf / JSON serialization (with or without Schema Registry), custom key types, and OpenTelemetry-compatible metrics — all with sensible defaults and minimal configuration.
 
@@ -143,6 +143,16 @@ Or set `MaxRetries` to `0` and omit `DeadLetterTopic` for a simple consumer with
   "Topic": "orders.v1",
   "MaxRetries": 0
 }
+```
+
+## Runnable Sample
+
+The [`samples/`](samples/) folder contains a complete worker + producer that demonstrate every failure path — success, retry, dead-lettering, DLQ reprocessing, invalid messages, and poison messages — against a dockerized Kafka:
+
+```bash
+docker compose up -d --wait
+dotnet run --project samples/OrderProcessor    # terminal 1
+dotnet run --project samples/OrderProducer     # terminal 2
 ```
 
 ## Architecture
