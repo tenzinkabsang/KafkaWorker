@@ -49,7 +49,6 @@ Each consumer gets its own section. The `Connection` section is shared:
     "OrderConsumer": {
       "GroupId": "order-processor",
       "Topic": "orders.v1",
-      "MaxRetries": 3,
       "DeadLetterTopic": "orders.v1.dlq"
     },
     "PaymentConsumer": {

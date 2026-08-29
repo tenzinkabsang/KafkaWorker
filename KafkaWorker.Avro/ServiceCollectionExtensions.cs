@@ -24,15 +24,21 @@ public static class ServiceCollectionExtensions
     /// <param name="configureConsumer">Optional callback to configure the underlying Confluent <see cref="ConsumerConfig"/>.</param>
     /// <param name="configureProducer">Optional callback to configure the underlying Confluent <see cref="ProducerConfig"/>
     /// used for dead letter publishing.</param>
+    /// <param name="configureSerializer">Optional callback to configure the Confluent <see cref="AvroSerializerConfig"/>
+    /// used when publishing to the dead letter topic (e.g. <c>AutoRegisterSchemas</c>, <c>UseLatestVersion</c>,
+    /// <c>SubjectNameStrategy</c>). With Confluent defaults, the first DLQ publish auto-registers a new
+    /// <c>{DeadLetterTopic}-value</c> subject; if your registry denies client-side registration, pre-register that
+    /// subject or set <c>AutoRegisterSchemas = false</c> and <c>UseLatestVersion = true</c> here.</param>
     /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddKafkaWorkerAvro<TMessage, THandler>(
         this IServiceCollection services, IConfiguration configuration,
         string configSection = KafkaWorkerConfig.Section,
         Action<ConsumerConfig>? configureConsumer = null,
-        Action<ProducerConfig>? configureProducer = null)
+        Action<ProducerConfig>? configureProducer = null,
+        Action<AvroSerializerConfig>? configureSerializer = null)
         where TMessage : class
         where THandler : class, IMessageHandler<TMessage>
-        => AddKafkaWorkerAvro<string, TMessage, THandler>(services, configuration, configSection, configureConsumer, configureProducer);
+        => AddKafkaWorkerAvro<string, TMessage, THandler>(services, configuration, configSection, configureConsumer, configureProducer, configureSerializer);
 
     /// <inheritdoc cref="AddKafkaWorkerAvro{TMessage, THandler}"/>
     /// <typeparam name="TKey">The message key type.</typeparam>
@@ -42,7 +48,8 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services, IConfiguration configuration,
         string configSection = KafkaWorkerConfig.Section,
         Action<ConsumerConfig>? configureConsumer = null,
-        Action<ProducerConfig>? configureProducer = null)
+        Action<ProducerConfig>? configureProducer = null,
+        Action<AvroSerializerConfig>? configureSerializer = null)
         where TMessage : class
         where THandler : class, IMessageHandler<TMessage>
     {
@@ -53,7 +60,9 @@ public static class ServiceCollectionExtensions
 
         KafkaWorker.ServiceCollectionExtensions.RegisterProducer<TKey, TMessage>(services, configuration, (sp, b) =>
         {
-            b.SetValueSerializer(new AvroSerializer<TMessage>(sp.GetRequiredService<ISchemaRegistryClient>()).AsSyncOverAsync());
+            b.SetValueSerializer(new AvroSerializer<TMessage>(
+                sp.GetRequiredService<ISchemaRegistryClient>(),
+                BuildSerializerConfig(configureSerializer)).AsSyncOverAsync());
         }, configureProducer);
 
         return KafkaWorker.ServiceCollectionExtensions.RegisterHostedConsumer<TKey, TMessage, THandler>(
@@ -61,6 +70,21 @@ public static class ServiceCollectionExtensions
             {
                 b.SetValueDeserializer(sp.GetRequiredService<IDeserializer<TMessage>>());
             });
+    }
+
+    /// <summary>
+    /// Materializes the user's serializer configuration, or returns null so Confluent defaults apply untouched.
+    /// </summary>
+    private static AvroSerializerConfig? BuildSerializerConfig(Action<AvroSerializerConfig>? configureSerializer)
+    {
+        if (configureSerializer is null)
+        {
+            return null;
+        }
+
+        var serializerConfig = new AvroSerializerConfig();
+        configureSerializer(serializerConfig);
+        return serializerConfig;
     }
 
     /// <summary>

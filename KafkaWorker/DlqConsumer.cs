@@ -26,7 +26,7 @@ namespace KafkaWorker;
 /// <typeparam name="TKey">The type of message key being consumed.</typeparam>
 /// <typeparam name="TMessage">The type of message being consumed.</typeparam>
 internal sealed partial class DlqConsumer<TKey, TMessage>(
-    IProducer<TKey, TMessage> producer,
+    Lazy<IProducer<TKey, TMessage>> producer,
     IDlqConsumerFactory<TKey, TMessage> consumerFactory,
     IServiceScopeFactory serviceScopeFactory,
     IOptionsMonitor<KafkaWorkerConfig> kafkaConfigMonitor,
@@ -266,7 +266,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
             overrideHeaders.AddUtf8(KafkaHeaders.ErrorMessage, failure.Message);
 
             await DeadLetterPublisher.PublishAsync(
-                producer,
+                producer.Value,
                 DeadLetterTopic!,
                 consumeResult.Message.Key,
                 consumeResult.Message.Value,

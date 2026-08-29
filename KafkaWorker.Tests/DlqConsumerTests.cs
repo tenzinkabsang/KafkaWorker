@@ -79,7 +79,7 @@ public class DlqConsumerTests : IDisposable
         var scopeFactory = Substitute.For<IServiceScopeFactory>();
         scopeFactory.CreateScope().Returns(scope);
 
-        return new DlqConsumer<string, TestMessage>(_producer, consumerFactory, scopeFactory, optionsMonitor, _metrics, _reprocessSignal, _logger, timeProvider ?? TimeProvider.System);
+        return new DlqConsumer<string, TestMessage>(new Lazy<IProducer<string, TestMessage>>(_producer), consumerFactory, scopeFactory, optionsMonitor, _metrics, _reprocessSignal, _logger, timeProvider ?? TimeProvider.System);
     }
 
     private static ConsumeResult<string, TestMessage> CreateDlqConsumeResult(

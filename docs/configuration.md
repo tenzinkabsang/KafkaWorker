@@ -42,8 +42,7 @@ Configure under `KafkaWorker:Consumer` (or a custom section — see [Multiple Co
     },
     "Consumer": {
       "GroupId": "my-order-processor",
-      "Topic": "orders.v1",
-      "MaxRetries": 3
+      "Topic": "orders.v1"
     }
   }
 }
@@ -60,7 +59,6 @@ Configure under `KafkaWorker:Consumer` (or a custom section — see [Multiple Co
     "Consumer": {
       "GroupId": "my-order-processor",
       "Topic": "orders.v1",
-      "MaxRetries": 3,
       "DeadLetterTopic": "orders.v1.dlq",
       "DeadLetterMaxReprocessAttempts": 3,
       "DeadLetterProcessingIntervalMinutes": 60

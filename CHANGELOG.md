@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`configureSerializer` callback** on the Schema Registry add-ons (`AddKafkaWorkerAvro`,
+  `AddKafkaWorkerProtobuf`, `AddKafkaWorkerRegistryJson`) to customize the serializer used for dead
+  letter publishing (`AutoRegisterSchemas`, `UseLatestVersion`, `SubjectNameStrategy`, …). With
+  Confluent defaults, the first DLQ publish auto-registers a `{DeadLetterTopic}-value` subject in
+  Schema Registry; registries that deny client-side registration can now disable auto-registration
+  instead of losing the message when the best-effort DLQ publish fails.
+
+### Changed
+
+- **The DLQ consumer now resolves the dead-letter producer lazily.** Previously registering
+  `AddKafkaWorkerDeadLetter` created the producer client at host startup even if no message was ever
+  re-enqueued, defeating the main consumer's lazy producer creation (both share one singleton). No
+  producer (or broker connection) is created until a message is actually dead-lettered or re-enqueued.
+
+### Documentation
+
+- Trimmed redundant `"MaxRetries": 3` (the default) from minimal configuration examples; the setting
+  remains documented in the configuration reference.
+- New **"Serializer Options (DLQ Publishing)"** section in the serialization docs covering the DLQ
+  subject auto-registration behavior and how to pre-register or disable it.
+
 ## [2.2.0] - 2026-07-23
 
 ### Added

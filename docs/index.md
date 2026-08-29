@@ -124,8 +124,7 @@ builder.Build().Run();
     },
     "Consumer": {
       "GroupId": "my-order-processor",
-      "Topic": "orders.v1",
-      "MaxRetries": 3
+      "Topic": "orders.v1"
     }
   }
 }

@@ -59,7 +59,6 @@ Add `DeadLetterTopic` to your consumer configuration:
     "Consumer": {
       "GroupId": "my-order-processor",
       "Topic": "orders.v1",
-      "MaxRetries": 3,
       "DeadLetterTopic": "orders.v1.dlq"
     }
   }

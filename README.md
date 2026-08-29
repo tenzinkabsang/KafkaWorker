@@ -115,8 +115,7 @@ builder.Build().Run();
     },
     "Consumer": {
       "GroupId": "my-order-processor",
-      "Topic": "orders.v1",
-      "MaxRetries": 3
+      "Topic": "orders.v1"
     }
   }
 }
@@ -128,7 +127,6 @@ That's it — the simplest setup consumes and retries with zero DLQ config. Add 
 "Consumer": {
   "GroupId": "my-order-processor",
   "Topic": "orders.v1",
-  "MaxRetries": 3,
   "DeadLetterTopic": "orders.v1.dlq"
 }
 ```
@@ -315,7 +313,6 @@ builder.Build().Run();
     "OrderConsumer": {
       "GroupId": "order-processor",
       "Topic": "orders.v1",
-      "MaxRetries": 3,
       "DeadLetterTopic": "orders.v1.dlq"
     },
     "PaymentConsumer": {
@@ -356,6 +353,18 @@ builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(
 The callback runs before the library enforces its invariants — `EnableAutoCommit` and `EnableAutoOffsetStore` are always set to `false` after your callback, since the library manages offsets manually.
 
 An optional `Action<ProducerConfig>` callback (`configureProducer`) is also available on all registration methods to customize the producer used for dead letter publishing.
+
+The Schema Registry add-ons (`AddKafkaWorkerAvro`, `AddKafkaWorkerProtobuf`, `AddKafkaWorkerRegistryJson`) additionally accept a `configureSerializer` callback for the serializer config used when publishing to the DLQ (`AutoRegisterSchemas`, `UseLatestVersion`, `SubjectNameStrategy`, …). By default the first DLQ publish auto-registers a `{DeadLetterTopic}-value` subject in Schema Registry — if your registry denies client-side registration, pre-register that subject or disable auto-registration here:
+
+```csharp
+builder.Services.AddKafkaWorkerAvro<OrderMessage, OrderMessageHandler>(
+    builder.Configuration,
+    configureSerializer: config =>
+    {
+        config.AutoRegisterSchemas = false;
+        config.UseLatestVersion = true;
+    });
+```
 
 > **Default:** The consumer uses `AutoOffsetReset.Latest`, meaning a brand-new consumer group (or one with expired offsets) will skip all existing messages and only process new ones. Override to `Earliest` if you need to process historical messages on first deploy.
 

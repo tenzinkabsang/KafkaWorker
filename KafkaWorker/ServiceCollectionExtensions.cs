@@ -243,8 +243,9 @@ public static class ServiceCollectionExtensions
             return builder.Build();
         });
 
-        // The main consumer only touches the producer when a message is dead-lettered; resolve it
-        // lazily so no producer (or broker connection) is created when DLQ publishing never happens.
+        // Both the main consumer and the DLQ consumer only touch the producer when publishing to the
+        // DLQ (dead-lettering or re-enqueueing); resolve it lazily so no producer (or broker
+        // connection) is created when DLQ publishing never happens.
         services.TryAddSingleton(sp => new Lazy<IProducer<TKey, TMessage>>(() => sp.GetRequiredService<IProducer<TKey, TMessage>>()));
     }
 

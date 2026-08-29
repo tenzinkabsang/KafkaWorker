@@ -49,6 +49,20 @@ public class OrderMessageHandler(ILogger<OrderMessageHandler> logger)
 
 `SchemaRegistryUrls` (under `KafkaWorker:Connection`) is required. For registries that need basic auth (e.g. Confluent Cloud), also set `SchemaRegistryUsername` and `SchemaRegistryPassword`. All other KafkaWorker options (retry, DLQ, etc.) work the same as the core package.
 
+## Serializer Options
+
+An optional `configureSerializer` callback customizes the `ProtobufSerializerConfig` used when publishing failed messages to the dead letter topic. By default the first DLQ publish auto-registers a `{DeadLetterTopic}-value` subject in Schema Registry; if your registry denies client-side registration, pre-register that subject or disable auto-registration:
+
+```csharp
+builder.Services.AddKafkaWorkerProtobuf<OrderMessage, OrderMessageHandler>(
+    builder.Configuration,
+    configureSerializer: config =>
+    {
+        config.AutoRegisterSchemas = false;
+        config.UseLatestVersion = true;
+    });
+```
+
 ## Custom Key Type
 
 ```csharp

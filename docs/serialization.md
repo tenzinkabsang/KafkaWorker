@@ -100,6 +100,24 @@ builder.Services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageHandler>(b
 
 ---
 
+## Serializer Options (DLQ Publishing)
+
+The Schema Registry formats serialize messages when publishing to the dead letter topic. Each registration method accepts an optional `configureSerializer` callback to customize the Confluent serializer config (`AvroSerializerConfig`, `ProtobufSerializerConfig`, or `JsonSerializerConfig`):
+
+```csharp
+builder.Services.AddKafkaWorkerAvro<OrderMessage, OrderMessageHandler>(
+    builder.Configuration,
+    configureSerializer: config =>
+    {
+        config.AutoRegisterSchemas = false;
+        config.UseLatestVersion = true;
+    });
+```
+
+**Why this matters for the DLQ:** Confluent serializers default to `AutoRegisterSchemas = true` with the topic name strategy, so the first message published to your dead letter topic auto-registers a new subject (`{DeadLetterTopic}-value`) in Schema Registry. In environments where clients are not allowed to register schemas, that publish fails — and since DLQ publishing is best-effort, the message is logged at Critical and lost. Either pre-register the schema under the `{DeadLetterTopic}-value` subject (alongside your main topic's subject), or set `AutoRegisterSchemas = false` and `UseLatestVersion = true` as shown above.
+
+---
+
 ## Custom Key Types
 
 All registration methods have a 3-type-parameter overload for custom key types:
