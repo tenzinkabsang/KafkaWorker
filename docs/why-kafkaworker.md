@@ -40,7 +40,7 @@ public class OrderConsumerService : BackgroundService
         {
             BootstrapServers = "localhost:9092",
             GroupId = "order-processor",
-            EnableAutoCommit = false,
+            EnableAutoCommit = true,
             EnableAutoOffsetStore = false,
             AutoOffsetReset = AutoOffsetReset.Latest
         };
@@ -67,7 +67,6 @@ public class OrderConsumerService : BackgroundService
                     if (ex.ConsumerRecord is { } r && r.Offset != Offset.Unset)
                     {
                         consumer.StoreOffset(new TopicPartitionOffset(r.TopicPartition, r.Offset + 1));
-                        consumer.Commit();
                     }
                     continue;
                 }
@@ -82,7 +81,7 @@ public class OrderConsumerService : BackgroundService
                 catch (JsonException ex)
                 {
                     await PublishToDlqAsync(dlqProducer, result, ex.Message, stoppingToken);
-                    Commit(consumer, result);
+                    consumer.StoreOffset(result);
                     continue;
                 }
 
@@ -116,20 +115,14 @@ public class OrderConsumerService : BackgroundService
                     }
                 }
 
-                Commit(consumer, result);
+                consumer.StoreOffset(result);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
         finally
         {
-            consumer.Close();
+            consumer.Close(); // final auto-commit of stored offsets
         }
-    }
-
-    private static void Commit(IConsumer<string, string> consumer, ConsumeResult<string, string> result)
-    {
-        consumer.StoreOffset(result);
-        consumer.Commit();
     }
 
     private async Task PublishToDlqAsync(IProducer<string, string> producer,
@@ -182,7 +175,7 @@ Everything else — the loop, offsets, retries, DLQ publishing *and* reprocessin
 | Concern | Raw Confluent.Kafka | KafkaWorker |
 |---------|--------------------|-------------|
 | Consume loop & graceful shutdown | You write it | Built in |
-| Manual offset management (`StoreOffset` + `Commit`) | You write it | Built in |
+| Manual offset management (`StoreOffset` + auto-commit wiring) | You write it | Built in |
 | Retry with exponential backoff + jitter | You write it | Built in (`MaxRetries`, Polly) |
 | Dead letter publishing with tracking headers | You write it | Built in |
 | **Periodic DLQ reprocessing** (in place, attempt-bounded, loop detection) | You write a second service | Built in (`AddKafkaWorkerDeadLetter`) |
@@ -200,7 +193,7 @@ Honesty matters more than adoption. Use raw `Confluent.Kafka` (or another tool) 
 
 - **Batch or parallel processing** — KafkaWorker processes messages sequentially per consumer, one at a time. That's a feature for ordering and backpressure, but a ceiling for very high-throughput topics.
 - **Exactly-once semantics / transactions** — the library is at-least-once by design; handlers must be idempotent.
-- **Custom commit strategies** — offsets are committed per message; there is no commit-every-N or async-commit mode.
+- **Custom commit strategies** — offsets are stored per message and flushed by the client's background auto-commit; there is no synchronous per-message or commit-every-N mode.
 - **Consuming without a consumer group**, manual partition assignment, or other low-level control.
 
 For the common case — "consume a topic, run business logic per message, don't lose anything, don't page me for one bad payload" — that's exactly what KafkaWorker is for.

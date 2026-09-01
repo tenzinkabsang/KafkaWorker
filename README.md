@@ -350,7 +350,7 @@ builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(
     });
 ```
 
-The callback runs before the library enforces its invariants — `EnableAutoCommit` and `EnableAutoOffsetStore` are always set to `false` after your callback, since the library manages offsets manually.
+The callback runs before the library enforces its invariants — after your callback, `EnableAutoOffsetStore` is always `false` (the library stores an offset only after the message is handled) and `EnableAutoCommit` is always `true` (the Kafka client's background auto-commit flushes stored offsets — every `AutoCommitIntervalMs`, on rebalance, and on shutdown).
 
 An optional `Action<ProducerConfig>` callback (`configureProducer`) is also available on all registration methods to customize the producer used for dead letter publishing.
 
@@ -402,6 +402,7 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 - **Scoped DI per message** — `IMessageHandler<TMessage>` is resolved in a new DI scope for each message. Scoped dependencies like EF Core `DbContext` work naturally via constructor injection.
 - **Poison messages are skipped, not fatal** — A message that fails deserialization never reaches your handler, so it cannot be retried or sent to the DLQ. The consumer logs it at `Critical` (with topic/partition/offset), emits a `deserialization_failed` metric, commits past it, and keeps going — one bad payload cannot crash the host or wedge the DLQ.
 - **Tombstones commit and continue** — Null-value messages (e.g. compaction tombstones) are skipped without invoking the handler, but their offsets are committed so the consumer always advances.
+- **At-least-once delivery** — An offset is stored only after its message is handled, and stored offsets are committed in the background (every ~5s by default, plus on rebalance and graceful shutdown). After a *hard* crash, messages processed since the last background flush are redelivered on restart — handlers should be idempotent. Tune the window with `AutoCommitIntervalMs` via `configureConsumer`.
 - **Dead-lettered messages are retried out of order** — by the time a DLQ message succeeds, later messages for the same key have usually been processed. Handlers should be idempotent and order-tolerant; see the [DLQ documentation](https://tenzinkabsang.github.io/KafkaWorker/dead-letter-queue) for details and the terminal-failures runbook.
 - **DLQ is best-effort from the main consumer** — The main consumer attempts to publish failed messages to the DLQ with Polly retry, but if all attempts fail it logs at `Critical`, commits the offset, and moves on. Processing incoming records takes priority over guaranteeing every failed message reaches the DLQ.
 - **DLQ consumer preserves messages on failure** — Unlike the main consumer, if the DLQ consumer fails to re-enqueue a message back to the DLQ, it stops the batch without committing. The message will be retried on the next scheduled run.
@@ -412,7 +413,7 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 ## What the Library Handles
 
 - Consumer subscription, consume loop, and graceful shutdown
-- `StoreOffset()` + `Commit()` after every message (success, DLQ publish, DLQ publish failure, tombstone, or deserialization failure)
+- `StoreOffset()` after every message (success, DLQ publish, DLQ publish failure, tombstone, or deserialization failure), flushed by the client's background auto-commit
 - Retry with exponential backoff and jitter (Polly)
 - Publishing to DLQ with tracking headers (`original-topic`, `error-message`, `invalid-message`, `batch-id`, `reprocessed-attempt`)
 - DLQ reprocessing on a timer with loop detection

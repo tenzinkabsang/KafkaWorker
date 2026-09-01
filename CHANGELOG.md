@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The main consumer no longer commits offsets synchronously after every message.** Offsets are
+  still stored (`StoreOffset`) only after a message is handled, but are now flushed by the Kafka
+  client's background auto-commit (`EnableAutoCommit = true` + `EnableAutoOffsetStore = false`,
+  the pattern Confluent recommends) — every `AutoCommitIntervalMs` (default 5s), on rebalance, and
+  on shutdown. This removes a blocking broker round trip per message and means a commit failure
+  (e.g. after a group eviction) surfaces through the client error callback instead of crashing the
+  host. Delivery semantics remain at-least-once; the only behavioral difference is after a *hard*
+  crash (kill -9, node loss), where messages processed since the last background flush are
+  redelivered — up to ~5s of messages instead of at most one. Graceful shutdown and rebalances
+  commit final offsets exactly as before. Tune the window with `AutoCommitIntervalMs` via
+  `configureConsumer` if needed. The DLQ consumer is unchanged (it keeps per-message synchronous
+  commits, which its stop-the-batch semantics rely on).
+- The duplicate-consumer registration error no longer suggests registering the same message type
+  with different key types; consumer options are keyed by message type, so that path would bind
+  both consumers to the same configuration. Use a distinct message type per consumer.
+- Updated dependencies: the net10.0 target now references `Microsoft.Extensions.*` 10.0.11
+  (servicing patches; the net8.0 target stays on 8.0.x).
+
+### Fixed
+
+- **The net8.0 target no longer forces the Microsoft.Extensions 10.x stack onto consumers.** The
+  net8.0 build again references `Microsoft.Extensions.*` 8.0.x (an accidental bump in 2.1.0 had
+  raised it to 10.0.10, lifting the whole extensions dependency graph of net8 LTS applications).
+
+## [2.3.0] - 2026-08-29
+
 ### Added
 
 - **`configureSerializer` callback** on the Schema Registry add-ons (`AddKafkaWorkerAvro`,
@@ -147,6 +175,7 @@ for full migration guidance.
 
 - Last release before the DLQ reprocessing strategy change.
 
+[2.3.0]: https://github.com/tenzinkabsang/KafkaWorker/releases/tag/v2.3.0
 [2.2.0]: https://github.com/tenzinkabsang/KafkaWorker/releases/tag/v2.2.0
 [2.1.0]: https://github.com/tenzinkabsang/KafkaWorker/releases/tag/v2.1.0
 [2.0.0]: https://github.com/tenzinkabsang/KafkaWorker/releases/tag/v2.0.0

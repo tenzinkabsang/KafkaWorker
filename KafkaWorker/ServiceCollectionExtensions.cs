@@ -26,7 +26,9 @@ public static class ServiceCollectionExtensions
     /// <param name="configSection">The configuration section path for consumer settings. Defaults to <c>KafkaWorker:Consumer</c>.</param>
     /// <param name="configureConsumer">Optional callback to configure the underlying Confluent <see cref="ConsumerConfig"/>.
     /// Settings like <c>AutoOffsetReset</c> and <c>SessionTimeoutMs</c> can be changed here.
-    /// <c>EnableAutoCommit</c> and <c>EnableAutoOffsetStore</c> are enforced by the library and cannot be overridden.</param>
+    /// <c>EnableAutoCommit</c> (<c>true</c>) and <c>EnableAutoOffsetStore</c> (<c>false</c>) are enforced by the
+    /// library and cannot be overridden: offsets are stored only after a message is handled and flushed by the
+    /// client's background auto-commit.</param>
     /// <param name="configureProducer">Optional callback to configure the underlying Confluent <see cref="ProducerConfig"/>
     /// used for dead letter publishing (e.g. security settings not covered by <see cref="KafkaConnectionConfig"/>).</param>
     /// <returns>The service collection for chaining.</returns>
@@ -175,7 +177,7 @@ public static class ServiceCollectionExtensions
         {
             throw new InvalidOperationException(
                 $"A consumer for {typeof(TMessage).Name} is already registered. " +
-                "Use a distinct message type per consumer, or use different key types.");
+                "Use a distinct message type per consumer.");
         }
 
         services.AddScoped<IMessageHandler<TMessage>, THandler>();
@@ -201,10 +203,13 @@ public static class ServiceCollectionExtensions
             };
             ApplySecurityConfig(consumerConfig, kafkaConnection);
 
-            // Allow user overrides, then re-enforce library invariants
+            // Allow user overrides, then re-enforce library invariants: offsets are stored manually
+            // only after a message is handled, and the client's background auto-commit flushes stored
+            // offsets (every AutoCommitIntervalMs, on rebalance, and on close) — at-least-once without
+            // a synchronous per-message commit round trip.
             configureConsumer?.Invoke(consumerConfig);
             consumerConfig.EnableAutoOffsetStore = false;
-            consumerConfig.EnableAutoCommit = false;
+            consumerConfig.EnableAutoCommit = true;
 
             var logger = sp.GetRequiredService<ILogger<Consumer<TKey, TMessage>>>();
             var builder = new ConsumerBuilder<TKey, TMessage>(consumerConfig)

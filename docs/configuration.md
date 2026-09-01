@@ -156,7 +156,7 @@ builder.Services.AddKafkaWorker<OrderMessage, OrderMessageHandler>(
     });
 ```
 
-The callback runs before the library enforces its invariants — `EnableAutoCommit` and `EnableAutoOffsetStore` are always set to `false` after your callback, since the library manages offsets manually.
+The callback runs before the library enforces its invariants — after your callback, `EnableAutoOffsetStore` is always `false` (the library stores an offset only after the message is handled) and `EnableAutoCommit` is always `true` (the Kafka client's background auto-commit flushes stored offsets — every `AutoCommitIntervalMs`, on rebalance, and on shutdown).
 
 ## ProducerConfig Overrides
 

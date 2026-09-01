@@ -15,8 +15,9 @@ namespace KafkaWorker;
 /// </summary>
 /// <remarks>The consumer automatically retries failed message processing up to a configurable maximum number of
 /// attempts. If a dead letter topic is configured, messages that cannot be processed after
-/// all retries are sent to the dead letter queue; otherwise, they are logged and skipped. Offsets are committed only
-/// after successful processing or after a message is sent to the dead letter topic.
+/// all retries are sent to the dead letter queue; otherwise, they are logged and skipped. Offsets are stored only
+/// after successful processing or after a message is sent to the dead letter topic, and are committed to the broker
+/// by the client's background auto-commit (periodically, on rebalance, and on close).
 /// The consumer continues processing subsequent messages even if individual messages fail.</remarks>
 internal sealed partial class Consumer<TKey, TMessage>(
     IConsumer<TKey, TMessage> consumer,
@@ -75,15 +76,17 @@ internal sealed partial class Consumer<TKey, TMessage>(
 
                 if (consumeResult.Message?.Value == null)
                 {
-                    // Tombstone (null value): nothing to process, but commit so the offset advances.
+                    // Tombstone (null value): nothing to process, but store the offset so the consumer advances.
                     LogTombstoneSkipped(logger, Topic, consumeResult.Partition.Value, consumeResult.Offset.Value);
-                    CommitOffset(consumeResult);
+                    consumer.StoreOffset(consumeResult);
                     continue;
                 }
 
                 await ProcessMessageWithRetryAsync(consumeResult, stoppingToken);
 
-                CommitOffset(consumeResult);
+                // Storing (not committing) is deliberate: the client's background auto-commit flushes
+                // stored offsets periodically, on rebalance, and on Close() — no per-message round trip.
+                consumer.StoreOffset(consumeResult);
             }
 
             LogFinishedExecuting(logger, Topic);
@@ -201,17 +204,11 @@ internal sealed partial class Consumer<TKey, TMessage>(
         }
     }
 
-    private void CommitOffset(ConsumeResult<TKey, TMessage> consumeResult)
-    {
-        consumer.StoreOffset(consumeResult);
-        consumer.Commit();
-    }
-
     /// <summary>
     /// Handles a message that failed to deserialize (poison message). The raw payload cannot be
     /// represented as <typeparamref name="TMessage"/>, so it cannot be retried or published to the
-    /// DLQ; it is logged at Critical and the offset is committed past it so the consumer survives.
-    /// Consume errors without a record offset (e.g. broker errors) are logged and not committed.
+    /// DLQ; it is logged at Critical and the offset is stored past it so the consumer survives.
+    /// Consume errors without a record offset (e.g. broker errors) are logged and not stored.
     /// </summary>
     private void SkipPoisonMessage(ConsumeException ex)
     {
@@ -225,7 +222,6 @@ internal sealed partial class Consumer<TKey, TMessage>(
 
             // StoreOffset(TopicPartitionOffset) stores the given offset verbatim, so +1 to move past the failed record.
             consumer.StoreOffset(new TopicPartitionOffset(record.TopicPartition, record.Offset + 1));
-            consumer.Commit();
         }
         else
         {
@@ -288,6 +284,6 @@ internal sealed partial class Consumer<TKey, TMessage>(
     [LoggerMessage(EventId = 112, Level = LogLevel.Error, Message = "Consume error on topic {Topic}; no record offset available, continuing without commit")]
     private static partial void LogConsumeError(ILogger logger, Exception ex, string topic);
 
-    [LoggerMessage(EventId = 113, Level = LogLevel.Debug, Message = "Skipping tombstone (null value) message and committing offset. Topic: {Topic}, Partition: {Partition}, Offset: {Offset}")]
+    [LoggerMessage(EventId = 113, Level = LogLevel.Debug, Message = "Skipping tombstone (null value) message and storing its offset. Topic: {Topic}, Partition: {Partition}, Offset: {Offset}")]
     private static partial void LogTombstoneSkipped(ILogger logger, string topic, int partition, long offset);
 }

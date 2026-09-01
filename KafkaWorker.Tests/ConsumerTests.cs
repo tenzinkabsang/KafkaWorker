@@ -314,10 +314,10 @@ public class ConsumerTests : IDisposable
 
     #endregion
 
-    #region Happy path - message handling and offset commit
+    #region Happy path - message handling and offset storing
 
     [Fact]
-    public async Task ExecuteAsync_HandlesMessageAndCommitsOffset()
+    public async Task ExecuteAsync_HandlesMessageAndStoresOffset()
     {
         var sut = CreateConsumer();
         var consumeResult = SetupSingleMessage();
@@ -329,7 +329,8 @@ public class ConsumerTests : IDisposable
         await _messageHandler.Received(1)
             .HandleMessageAsync(consumeResult.Message.Value, Arg.Any<CancellationToken>());
         _kafkaConsumer.Received(1).StoreOffset(consumeResult);
-        _kafkaConsumer.Received(1).Commit();
+        // Stored offsets are flushed by the client's background auto-commit, never synchronously
+        _kafkaConsumer.DidNotReceive().Commit();
     }
 
     [Fact]
@@ -348,15 +349,13 @@ public class ConsumerTests : IDisposable
         {
             _messageHandler.HandleMessageAsync(msg1.Message.Value, Arg.Any<CancellationToken>());
             _kafkaConsumer.StoreOffset(msg1);
-            _kafkaConsumer.Commit();
             _messageHandler.HandleMessageAsync(msg2.Message.Value, Arg.Any<CancellationToken>());
             _kafkaConsumer.StoreOffset(msg2);
-            _kafkaConsumer.Commit();
         });
     }
 
     [Fact]
-    public async Task ExecuteAsync_CommitsOffsetPerMessage_NotInBatch()
+    public async Task ExecuteAsync_StoresOffsetPerMessage()
     {
         var sut = CreateConsumer();
         var msg1 = CreateConsumeResult("key-1");
@@ -367,7 +366,9 @@ public class ConsumerTests : IDisposable
         await WaitUntilCancellationRequestedAsync(_cts);
         await sut.StopAsync(CancellationToken.None);
 
-        _kafkaConsumer.Received(2).Commit();
+        _kafkaConsumer.Received(1).StoreOffset(msg1);
+        _kafkaConsumer.Received(1).StoreOffset(msg2);
+        _kafkaConsumer.DidNotReceive().Commit();
     }
 
     #endregion
@@ -394,11 +395,11 @@ public class ConsumerTests : IDisposable
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
-        _kafkaConsumer.DidNotReceive().Commit();
+        _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<ConsumeResult<string, TestMessage>>());
     }
 
     [Fact]
-    public async Task ExecuteAsync_NullValueMessage_SkipsHandlerButCommitsOffset()
+    public async Task ExecuteAsync_NullValueMessage_SkipsHandlerButStoresOffset()
     {
         var sut = CreateConsumer();
         var nullResult = CreateNullMessageResult();
@@ -416,11 +417,10 @@ public class ConsumerTests : IDisposable
         await WaitUntilCancellationRequestedAsync(_cts);
         await sut.StopAsync(CancellationToken.None);
 
-        // Tombstones are never handled, but their offset is committed so the consumer advances
+        // Tombstones are never handled, but their offset is stored so the consumer advances
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
         _kafkaConsumer.Received(1).StoreOffset(nullResult);
-        _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
@@ -444,7 +444,7 @@ public class ConsumerTests : IDisposable
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
-        _kafkaConsumer.DidNotReceive().Commit();
+        _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<ConsumeResult<string, TestMessage>>());
     }
 
     [Fact]
@@ -462,10 +462,10 @@ public class ConsumerTests : IDisposable
 
         await _messageHandler.Received(1)
             .HandleMessageAsync(validResult.Message.Value, Arg.Any<CancellationToken>());
-        // The tombstone commits its offset; the EOF result does not
+        // The tombstone stores its offset; the EOF result does not
         _kafkaConsumer.Received(1).StoreOffset(nullResult);
         _kafkaConsumer.Received(1).StoreOffset(validResult);
-        _kafkaConsumer.Received(2).Commit();
+        _kafkaConsumer.DidNotReceive().StoreOffset(eofResult);
     }
 
     #endregion
@@ -571,7 +571,7 @@ public class ConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task HandlerFailure_CommitsOffsetAfterDlqPublish()
+    public async Task HandlerFailure_StoresOffsetAfterDlqPublish()
     {
         var sut = CreateConsumer();
         var consumeResult = SetupSingleMessage();
@@ -583,7 +583,6 @@ public class ConsumerTests : IDisposable
         await sut.StopAsync(CancellationToken.None);
 
         _kafkaConsumer.Received(1).StoreOffset(consumeResult);
-        _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
@@ -634,7 +633,7 @@ public class ConsumerTests : IDisposable
         // Should still publish to DLQ without throwing NullReferenceException
         await _deadLetterProducer.Received()
             .ProduceAsync(TestDlqTopic, Arg.Any<Message<string, TestMessage>>(), Arg.Any<CancellationToken>());
-        _kafkaConsumer.Received(1).Commit();
+        _kafkaConsumer.Received(1).StoreOffset(result);
     }
 
     #endregion
@@ -681,7 +680,7 @@ public class ConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task InvalidMessage_CommitsOffset()
+    public async Task InvalidMessage_StoresOffset()
     {
         var sut = CreateConsumer();
         var consumeResult = SetupSingleMessage();
@@ -693,7 +692,6 @@ public class ConsumerTests : IDisposable
         await sut.StopAsync(CancellationToken.None);
 
         _kafkaConsumer.Received(1).StoreOffset(consumeResult);
-        _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
@@ -772,7 +770,7 @@ public class ConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task NoDlqConfigured_StillCommitsOffset()
+    public async Task NoDlqConfigured_StillStoresOffset()
     {
         var sut = CreateConsumer(deadLetterTopic: null);
         var consumeResult = SetupSingleMessage();
@@ -784,7 +782,6 @@ public class ConsumerTests : IDisposable
         await sut.StopAsync(CancellationToken.None);
 
         _kafkaConsumer.Received(1).StoreOffset(consumeResult);
-        _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
@@ -804,7 +801,7 @@ public class ConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task NoDlqConfigured_InvalidMessage_StillCommitsOffset()
+    public async Task NoDlqConfigured_InvalidMessage_StillStoresOffset()
     {
         var sut = CreateConsumer(deadLetterTopic: null);
         var consumeResult = SetupSingleMessage();
@@ -816,7 +813,6 @@ public class ConsumerTests : IDisposable
         await sut.StopAsync(CancellationToken.None);
 
         _kafkaConsumer.Received(1).StoreOffset(consumeResult);
-        _kafkaConsumer.Received(1).Commit();
     }
 
     #endregion
@@ -879,7 +875,7 @@ public class ConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task DlqPublishFailure_StillCommitsOffset()
+    public async Task DlqPublishFailure_StillStoresOffset()
     {
         var sut = CreateConsumer();
         var consumeResult = SetupSingleMessage();
@@ -893,7 +889,6 @@ public class ConsumerTests : IDisposable
         await sut.StopAsync(CancellationToken.None);
 
         _kafkaConsumer.Received(1).StoreOffset(consumeResult);
-        _kafkaConsumer.Received(1).Commit();
     }
 
     #endregion
@@ -960,7 +955,7 @@ public class ConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task Retry_SucceedsOnSecondAttempt_CommitsOffset()
+    public async Task Retry_SucceedsOnSecondAttempt_StoresOffset()
     {
         var sut = CreateConsumer(maxRetries: 2);
         var consumeResult = SetupSingleMessage();
@@ -979,7 +974,6 @@ public class ConsumerTests : IDisposable
         await sut.StopAsync(CancellationToken.None);
 
         _kafkaConsumer.Received(1).StoreOffset(consumeResult);
-        _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
@@ -1047,8 +1041,9 @@ public class ConsumerTests : IDisposable
         // Both messages processed
         await _messageHandler.Received(2)
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
-        // Both offsets committed
-        _kafkaConsumer.Received(2).Commit();
+        // Both offsets stored
+        _kafkaConsumer.Received(1).StoreOffset(msg1);
+        _kafkaConsumer.Received(1).StoreOffset(msg2);
     }
 
     [Fact]
@@ -1074,7 +1069,8 @@ public class ConsumerTests : IDisposable
 
         await _messageHandler.Received(2)
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
-        _kafkaConsumer.Received(2).Commit();
+        _kafkaConsumer.Received(1).StoreOffset(msg1);
+        _kafkaConsumer.Received(1).StoreOffset(msg2);
     }
 
     [Fact]
@@ -1104,15 +1100,16 @@ public class ConsumerTests : IDisposable
         // Second message still processed
         await _messageHandler.Received(2)
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
-        _kafkaConsumer.Received(2).Commit();
+        _kafkaConsumer.Received(1).StoreOffset(msg1);
+        _kafkaConsumer.Received(1).StoreOffset(msg2);
     }
 
     #endregion
 
-    #region Poison messages - deserialization failures skip and commit
+    #region Poison messages - deserialization failures skip and store past
 
     [Fact]
-    public async Task ConsumeException_PoisonMessage_CommitsPastFailedOffset_AndContinues()
+    public async Task ConsumeException_PoisonMessage_StoresPastFailedOffset_AndContinues()
     {
         var sut = CreateConsumer();
         var validResult = CreateConsumeResult();
@@ -1133,10 +1130,10 @@ public class ConsumerTests : IDisposable
         await WaitUntilCancellationRequestedAsync(_cts);
         await sut.StopAsync(CancellationToken.None);
 
-        // Committed past the poison record (failed offset + 1), then processed the next message
+        // Stored past the poison record (failed offset + 1), then processed the next message
         _kafkaConsumer.Received(1).StoreOffset(Arg.Is<TopicPartitionOffset>(t =>
             t.Topic == TestTopic && t.Partition.Value == 0 && t.Offset.Value == 6));
-        _kafkaConsumer.Received(2).Commit();
+        _kafkaConsumer.Received(1).StoreOffset(validResult);
         await _messageHandler.Received(1)
             .HandleMessageAsync(validResult.Message.Value, Arg.Any<CancellationToken>());
     }
@@ -1191,7 +1188,7 @@ public class ConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ConsumeException_UnsetOffset_ContinuesWithoutCommit()
+    public async Task ConsumeException_UnsetOffset_ContinuesWithoutStoring()
     {
         var sut = CreateConsumer();
         var validResult = CreateConsumeResult();
@@ -1220,10 +1217,9 @@ public class ConsumerTests : IDisposable
         await WaitUntilCancellationRequestedAsync(_cts);
         await sut.StopAsync(CancellationToken.None);
 
-        // No offset to skip past — nothing stored for the error, only the valid message commits
+        // No offset to skip past — nothing stored for the error, only the valid message's offset is stored
         _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<TopicPartitionOffset>());
         _kafkaConsumer.Received(1).StoreOffset(validResult);
-        _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
@@ -1248,12 +1244,13 @@ public class ConsumerTests : IDisposable
         });
 
         _kafkaConsumer.Received(1).Close();
-        _kafkaConsumer.DidNotReceive().Commit();
+        _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<ConsumeResult<string, TestMessage>>());
+        _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<TopicPartitionOffset>());
     }
 
     #endregion
 
-    #region Cancellation during handling - no DLQ, no commit
+    #region Cancellation during handling - no DLQ, no offset stored
 
     [Fact]
     public async Task CancellationDuringProcessing_DoesNotPublishToDlq()
@@ -1279,7 +1276,7 @@ public class ConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task CancellationDuringProcessing_DoesNotCommitOffset()
+    public async Task CancellationDuringProcessing_DoesNotStoreOffset()
     {
         var sut = CreateConsumer();
         var consumeResult = CreateConsumeResult();
@@ -1298,7 +1295,6 @@ public class ConsumerTests : IDisposable
         await sut.StopAsync(CancellationToken.None);
 
         _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<ConsumeResult<string, TestMessage>>());
-        _kafkaConsumer.DidNotReceive().Commit();
     }
 
     [Fact]
@@ -1322,7 +1318,7 @@ public class ConsumerTests : IDisposable
 
         await _deadLetterProducer.DidNotReceive()
             .ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, TestMessage>>(), Arg.Any<CancellationToken>());
-        _kafkaConsumer.DidNotReceive().Commit();
+        _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<ConsumeResult<string, TestMessage>>());
     }
 
     [Fact]

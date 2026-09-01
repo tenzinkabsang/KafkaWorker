@@ -111,14 +111,14 @@ Deserialization failures are **not** fatal: they are skipped and committed past 
 
 ### Offset Management
 
-The library uses manual offset management:
-1. `StoreOffset()` — marks the offset locally
-2. `Commit()` — commits the stored offset to Kafka
+The library stores offsets manually and lets the Kafka client commit them in the background:
+1. `StoreOffset()` — called after every message, whether processing succeeded, the message was sent to the DLQ, a DLQ publish failed, the message was a tombstone (null value), or it failed deserialization. This ensures the consumer never gets stuck on a single message.
+2. Auto-commit (`EnableAutoCommit = true`) — the client flushes stored offsets every `AutoCommitIntervalMs` (default 5s), on rebalance, and on graceful shutdown. There is no synchronous per-message commit round trip.
 
-Both are called after every message, whether processing succeeded, the message was sent to the DLQ, a DLQ publish failed, the message was a tombstone (null value), or it failed deserialization. This ensures the consumer never gets stuck on a single message.
+Because an offset is stored only *after* its message is handled, delivery is at-least-once. Graceful shutdown and rebalances commit final offsets; after a hard crash (kill -9, node loss), messages processed since the last background flush are redelivered — handlers should be idempotent. Tune the window with `AutoCommitIntervalMs` via `configureConsumer`.
 
 {: .note }
-> Confluent.Kafka's internal consumer position advances on each `Consume()` call regardless of offset commits. Not committing an offset only helps on consumer restart or rebalance — not within the current session.
+> Confluent.Kafka's internal consumer position advances on each `Consume()` call regardless of offset commits. Not storing an offset only helps on consumer restart or rebalance — not within the current session.
 
 ---
 
@@ -127,7 +127,7 @@ Both are called after every message, whether processing succeeded, the message w
 You write the `IMessageHandler<TMessage>` — the library handles everything else:
 
 - Consumer subscription, consume loop, and graceful shutdown
-- `StoreOffset()` + `Commit()` after every message
+- `StoreOffset()` after every message, flushed by the client's background auto-commit
 - Retry with exponential backoff and jitter (Polly)
 - Publishing to DLQ with tracking headers
 - DLQ reprocessing on a timer with loop detection
