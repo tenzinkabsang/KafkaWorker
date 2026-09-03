@@ -24,19 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   naturally) to store terminal failures in a database, blob storage, or an alerting system.
   Best-effort: sink exceptions are logged and never affect the consumer or offsets.
 
-### Fixed
-
-- **Shutdown during a DLQ publish no longer commits the message as handled.** Previously a
-  cancellation thrown mid-publish was swallowed by the best-effort catch and the offset advanced,
-  silently losing the message; it now propagates so the message is redelivered and dead-lettered
-  after restart.
-
-### Documentation
-
-- New **"Poison-Message Capture"** and **"Terminal Failure Sink"** sections in the DLQ docs, and
-  explicit guidance to size DLQ topic retention generously (`retention.ms=-1`) since the DLQ topic
-  doubles as the failure archive.
-
 ### Changed
 
 - **The main consumer no longer commits offsets synchronously after every message.** Offsets are
@@ -59,9 +46,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Shutdown during a DLQ publish no longer commits the message as handled.** Previously a
+  cancellation thrown mid-publish was swallowed by the best-effort catch and the offset advanced,
+  silently losing the message; it now propagates so the message is redelivered and dead-lettered
+  after restart.
 - **The net8.0 target no longer forces the Microsoft.Extensions 10.x stack onto consumers.** The
   net8.0 build again references `Microsoft.Extensions.*` 8.0.x (an accidental bump in 2.1.0 had
   raised it to 10.0.10, lifting the whole extensions dependency graph of net8 LTS applications).
+
+### Documentation
+
+- New **"Poison-Message Capture"** and **"Terminal Failure Sink"** sections in the DLQ docs, and
+  explicit guidance to size DLQ topic retention generously (`retention.ms=-1`) since the DLQ topic
+  doubles as the failure archive.
+
+### Upgrade notes
+
+- **Deserialization failures now log at `Error`, not `Critical`, when captured to the DLQ** — which
+  is the common case whenever a `DeadLetterTopic` is configured. Alerts keyed on the `Critical`
+  poison-message log will stop firing. Re-key them on the `deserialization_failed` value of the
+  `kafkaworker.messages.processed` `status` tag (or the new `dlq_published` `reason` of the same
+  name). The `Critical` log remains for the genuinely lossy cases: no DLQ configured, or the
+  capture publish itself failed.
+- **Your DLQ topic will start receiving records that do not deserialize.** Captured poison records
+  hold the original raw bytes and carry `deserialization-failed: true`. The library's own DLQ
+  consumer skips them safely, but external DLQ tooling — Schema Registry-aware consumers, redrive
+  scripts, dashboards — must tolerate them. There is no opt-out short of leaving `DeadLetterTopic`
+  unset.
+- **A hard crash now redelivers more messages.** With background auto-commit, a `kill -9` or node
+  loss redelivers everything processed since the last flush (up to `AutoCommitIntervalMs`, default
+  5s) instead of at most one message. Graceful shutdown and rebalances are unaffected. Handlers
+  were already required to be idempotent; lower `AutoCommitIntervalMs` via `configureConsumer` to
+  narrow the window.
+- **net8.0 consumers:** the `Microsoft.Extensions.*` floor drops back to 8.0.x. This only relaxes
+  the constraint, but if you were relying on KafkaWorker to pull the 10.x stack into a net8 app,
+  reference those packages explicitly.
 
 ## [2.3.0] - 2026-08-29
 
