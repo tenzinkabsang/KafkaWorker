@@ -31,4 +31,11 @@ internal static class KafkaHeaders
     /// The number of times this message has been reprocessed from the DLQ.
     /// </summary>
     public const string ReprocessedAttempt = "reprocessed-attempt";
+
+    /// <summary>
+    /// Indicates the record's value is the raw bytes of a message that failed deserialization,
+    /// captured for manual inspection and redrive. Value should be "true" if present.
+    /// The DLQ consumer never auto-reprocesses these records.
+    /// </summary>
+    public const string DeserializationFailed = "deserialization-failed";
 }

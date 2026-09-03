@@ -154,6 +154,47 @@ public class ServiceCollectionExtensionsTests
     }
 
     [Fact]
+    public void AddKafkaWorker_RawDlqProducer_IsIsolatedPerMessageType()
+    {
+        var services = new ServiceCollection();
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["KafkaWorker:Connection:BootstrapServers"] = "localhost:9092",
+                ["KafkaWorker:ConsumerA:Topic"] = "topic-a",
+                ["KafkaWorker:ConsumerA:GroupId"] = "group-a",
+                ["KafkaWorker:ConsumerB:Topic"] = "topic-b",
+                ["KafkaWorker:ConsumerB:GroupId"] = "group-b",
+            })
+            .Build();
+
+        int? timeoutSeenByA = null;
+        int? timeoutSeenByB = null;
+
+        services.AddKafkaWorker<MessageA, HandlerA>(config,
+            configSection: "KafkaWorker:ConsumerA",
+            configureProducer: p => { p.MessageTimeoutMs = 1111; timeoutSeenByA = p.MessageTimeoutMs; });
+        services.AddKafkaWorker<MessageB, HandlerB>(config,
+            configSection: "KafkaWorker:ConsumerB",
+            configureProducer: p => { p.MessageTimeoutMs = 2222; timeoutSeenByB = p.MessageTimeoutMs; });
+
+        using var provider = services.BuildServiceProvider();
+
+        var rawA = provider.GetRequiredService<RawDeadLetterProducer<MessageA>>();
+        var rawB = provider.GetRequiredService<RawDeadLetterProducer<MessageB>>();
+        Assert.NotSame(rawA, rawB);
+
+        // Materializing each one runs that registration's own configureProducer. Unkeyed, the
+        // second registration's TryAdd would be a no-op and both would share A's producer.
+        _ = rawA.Value;
+        _ = rawB.Value;
+
+        Assert.Equal(1111, timeoutSeenByA);
+        Assert.Equal(2222, timeoutSeenByB);
+        Assert.NotSame(rawA.Value, rawB.Value);
+    }
+
+    [Fact]
     public void AddKafkaWorkerDeadLetter_RegistersReprocessTrigger()
     {
         var services = new ServiceCollection();

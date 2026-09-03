@@ -16,6 +16,8 @@ public static class ServiceCollectionExtensions
 {
     internal static string GetDlqConfigKey<TMessage>() => $"dlq-{typeof(TMessage).FullName}";
 
+    internal static string GetRawDlqProducerKey<TMessage>() => $"raw-dlq-producer-{typeof(TMessage).FullName}";
+
     /// <summary>
     /// Registers a hosted Kafka consumer that deserializes messages using plain JSON (System.Text.Json) without Schema Registry.
     /// </summary>
@@ -252,6 +254,31 @@ public static class ServiceCollectionExtensions
         // DLQ (dead-lettering or re-enqueueing); resolve it lazily so no producer (or broker
         // connection) is created when DLQ publishing never happens.
         services.TryAddSingleton(sp => new Lazy<IProducer<TKey, TMessage>>(() => sp.GetRequiredService<IProducer<TKey, TMessage>>()));
+
+        // Raw-bytes producer used only to capture records that fail deserialization: the payload
+        // cannot be represented as TMessage, so it is preserved verbatim in the DLQ for manual
+        // inspection/redrive. byte[] serialization is built in — no Schema Registry involvement.
+        // Keyed by message type because IProducer<byte[], byte[]> is the same service type for every
+        // consumer: unkeyed, the first registration's configureProducer would silently apply to all
+        // of them, and the registration would collide with any byte-array producer the application
+        // registers for its own use.
+        services.TryAddKeyedSingleton<IProducer<byte[], byte[]>>(GetRawDlqProducerKey<TMessage>(), (sp, _) =>
+        {
+            var producerConfig = new ProducerConfig
+            {
+                BootstrapServers = kafkaConnection.BootstrapServers,
+                ClientId = Dns.GetHostName()
+            };
+            ApplySecurityConfig(producerConfig, kafkaConnection);
+            configureProducer?.Invoke(producerConfig);
+            return new ProducerBuilder<byte[], byte[]>(producerConfig).Build();
+        });
+
+        // Wrapped in a message-typed holder so the consumer can take it as an ordinary constructor
+        // dependency — a keyed service would need a compile-time constant key attribute, which a
+        // key derived from typeof(TMessage) cannot be — while staying lazily created.
+        services.TryAddSingleton(sp => new RawDeadLetterProducer<TMessage>(
+            () => sp.GetRequiredKeyedService<IProducer<byte[], byte[]>>(GetRawDlqProducerKey<TMessage>())));
     }
 
     /// <summary>

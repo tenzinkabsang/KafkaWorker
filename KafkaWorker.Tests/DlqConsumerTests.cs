@@ -19,6 +19,7 @@ public class DlqConsumerTests : IDisposable
     private readonly IConsumer<string, TestMessage> _kafkaConsumer;
     private readonly IProducer<string, TestMessage> _producer;
     private readonly IMessageHandler<TestMessage> _messageHandler;
+    private readonly ITerminalFailureSink<TestMessage> _terminalSink;
     private readonly ILogger<DlqConsumer<string, TestMessage>> _logger;
     private readonly KafkaWorkerMetrics _metrics;
     private readonly DlqReprocessSignal<TestMessage> _reprocessSignal = new();
@@ -28,6 +29,7 @@ public class DlqConsumerTests : IDisposable
     {
         _kafkaConsumer = Substitute.For<IConsumer<string, TestMessage>>();
         _producer = Substitute.For<IProducer<string, TestMessage>>();
+        _terminalSink = Substitute.For<ITerminalFailureSink<TestMessage>>();
         _messageHandler = Substitute.For<IMessageHandler<TestMessage>>();
         _logger = Substitute.For<ILogger<DlqConsumer<string, TestMessage>>>();
         _logger.IsEnabled(Arg.Any<LogLevel>()).Returns(true);
@@ -74,6 +76,7 @@ public class DlqConsumerTests : IDisposable
 
         var serviceProvider = Substitute.For<IServiceProvider>();
         serviceProvider.GetService(typeof(IMessageHandler<TestMessage>)).Returns(_messageHandler);
+        serviceProvider.GetService(typeof(ITerminalFailureSink<TestMessage>)).Returns(_terminalSink);
         var scope = Substitute.For<IServiceScope>();
         scope.ServiceProvider.Returns(serviceProvider);
         var scopeFactory = Substitute.For<IServiceScopeFactory>();
@@ -132,15 +135,22 @@ public class DlqConsumerTests : IDisposable
     /// </summary>
     private static ConsumeException CreatePoisonException(
         long offset = 3,
-        ErrorCode code = ErrorCode.Local_ValueDeserialization)
+        ErrorCode code = ErrorCode.Local_ValueDeserialization,
+        bool capturedByMainConsumer = false)
     {
+        var headers = new Headers();
+        if (capturedByMainConsumer)
+        {
+            headers.Add(KafkaHeaders.DeserializationFailed, Encoding.UTF8.GetBytes("true"));
+        }
+
         return new ConsumeException(
             new ConsumeResult<byte[], byte[]>
             {
                 Topic = TestDlqTopic,
                 Partition = new Partition(0),
                 Offset = new Offset(offset),
-                Message = new Message<byte[], byte[]>()
+                Message = new Message<byte[], byte[]> { Headers = headers }
             },
             new Error(code));
     }
@@ -1159,6 +1169,142 @@ public class DlqConsumerTests : IDisposable
         _kafkaConsumer.Received(2).Close();
 
         await sut.StopAsync(CancellationToken.None);
+    }
+
+    #endregion
+
+    #region Terminal failure sink
+
+    [Fact]
+    public async Task ProcessBatch_InvalidHeaderSkip_NotifiesTerminalSink()
+    {
+        var sut = CreateConsumer();
+        var invalidMsg = CreateDlqConsumeResult(isInvalidMessage: true, reprocessAttempt: 2);
+        SetupConsumeSequence(invalidMsg);
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        await _terminalSink.Received(1).HandleAsync(
+            Arg.Is<TerminalFailure<TestMessage>>(f =>
+                f.Reason == TerminalFailureReason.InvalidMessage &&
+                f.Message == invalidMsg.Message.Value &&
+                f.SourceTopic == TestOriginalTopic &&
+                f.ReprocessAttempts == 2),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_MaxAttemptsSkip_NotifiesTerminalSink()
+    {
+        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        var exceededMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
+        SetupConsumeSequence(exceededMsg);
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        await _terminalSink.Received(1).HandleAsync(
+            Arg.Is<TerminalFailure<TestMessage>>(f =>
+                f.Reason == TerminalFailureReason.MaxReprocessAttemptsExceeded &&
+                f.Message == exceededMsg.Message.Value &&
+                f.ReprocessAttempts == 3),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_InvalidDuringReprocess_NotifiesTerminalSinkWithError()
+    {
+        var sut = CreateConsumer();
+        var dlqMessage = CreateDlqConsumeResult();
+        SetupConsumeSequence(dlqMessage);
+        _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidMessageException("schema drift"));
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        await _terminalSink.Received(1).HandleAsync(
+            Arg.Is<TerminalFailure<TestMessage>>(f =>
+                f.Reason == TerminalFailureReason.InvalidMessage &&
+                f.Error == "schema drift"),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_SuccessfulReprocess_DoesNotNotifySink()
+    {
+        var sut = CreateConsumer();
+        SetupConsumeSequence(CreateDlqConsumeResult());
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        await _terminalSink.DidNotReceive()
+            .HandleAsync(Arg.Any<TerminalFailure<TestMessage>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_FailedReprocess_ReEnqueued_DoesNotNotifySink()
+    {
+        var sut = CreateConsumer();
+        SetupConsumeSequence(CreateDlqConsumeResult(reprocessAttempt: 1));
+        _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("still failing"));
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        // Re-enqueued for a future tick — not terminal yet
+        await _terminalSink.DidNotReceive()
+            .HandleAsync(Arg.Any<TerminalFailure<TestMessage>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_TerminalSinkThrows_StillCommitsAndContinues()
+    {
+        var sut = CreateConsumer();
+        var invalidMsg = CreateDlqConsumeResult(key: "invalid", isInvalidMessage: true);
+        var normalMsg = CreateDlqConsumeResult(key: "normal");
+        SetupConsumeSequence(invalidMsg, normalMsg);
+        _terminalSink.HandleAsync(Arg.Any<TerminalFailure<TestMessage>>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("sink db down"));
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        _kafkaConsumer.Received(1).StoreOffset(invalidMsg);
+        await _messageHandler.Received(1)
+            .HandleMessageAsync(normalMsg.Message.Value, Arg.Any<CancellationToken>());
+        _logger.Received().Log(
+            LogLevel.Error,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Terminal failure sink threw")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    #endregion
+
+    #region Captured raw poison records
+
+    [Fact]
+    public async Task ProcessBatch_CapturedPoisonRecord_SkipsQuietly_WithoutCriticalLog()
+    {
+        var sut = CreateConsumer();
+        var callIndex = 0;
+        _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
+            .Returns(_ =>
+            {
+                if (callIndex++ == 0)
+                    throw CreatePoisonException(offset: 3, capturedByMainConsumer: true);
+                return null!;
+            });
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        // Committed past like any poison record, but without the Critical alarm
+        _kafkaConsumer.Received(1).StoreOffset(Arg.Is<TopicPartitionOffset>(t => t.Offset.Value == 4));
+        _logger.DidNotReceive().Log(
+            LogLevel.Critical,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("failed to deserialize")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     #endregion

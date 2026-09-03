@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Poison-message capture.** A message that fails deserialization is no longer dropped: when a
+  `DeadLetterTopic` is configured, its raw key/value bytes are captured there verbatim (via a plain
+  `byte[]` producer — no Schema Registry involvement) with the usual tracking headers plus
+  `deserialization-failed: true`, logged at `Error` instead of `Critical`, and counted under
+  `dlq_published` reason `deserialization_failed`. The DLQ consumer recognizes the header and skips
+  these records quietly — they await manual redrive after a payload/schema fix. Without a DLQ (or
+  if the capture publish fails) the record is logged at `Critical` and lost, as before.
+- **`ITerminalFailureSink<TMessage>`** — optional extension point invoked exactly when the library
+  permanently gives up on a message: the DLQ consumer skips it (invalid, or reprocess attempts
+  exhausted), the best-effort DLQ publish fails, or processing fails with no DLQ configured (for
+  the last two the sink is the message's last chance to be persisted anywhere). Register any
+  implementation in DI (resolved from a fresh scope per call, so an EF Core `DbContext` injects
+  naturally) to store terminal failures in a database, blob storage, or an alerting system.
+  Best-effort: sink exceptions are logged and never affect the consumer or offsets.
+
+### Fixed
+
+- **Shutdown during a DLQ publish no longer commits the message as handled.** Previously a
+  cancellation thrown mid-publish was swallowed by the best-effort catch and the offset advanced,
+  silently losing the message; it now propagates so the message is redelivered and dead-lettered
+  after restart.
+
+### Documentation
+
+- New **"Poison-Message Capture"** and **"Terminal Failure Sink"** sections in the DLQ docs, and
+  explicit guidance to size DLQ topic retention generously (`retention.ms=-1`) since the DLQ topic
+  doubles as the failure archive.
+
 ### Changed
 
 - **The main consumer no longer commits offsets synchronously after every message.** Offsets are

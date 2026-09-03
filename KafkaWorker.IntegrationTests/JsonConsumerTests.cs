@@ -9,6 +9,21 @@ namespace KafkaWorker.IntegrationTests;
 
 public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
 {
+    /// <summary>Records terminal failures so tests can assert the sink was invoked.</summary>
+    private sealed class RecordingTerminalFailureSink : ITerminalFailureSink<OrderMessage>
+    {
+        public List<TerminalFailure<OrderMessage>> Failures { get; } = [];
+
+        public Task HandleAsync(TerminalFailure<OrderMessage> failure, CancellationToken cancellationToken)
+        {
+            lock (Failures)
+            {
+                Failures.Add(failure);
+            }
+            return Task.CompletedTask;
+        }
+    }
+
     [Fact]
     public async Task ProcessesSuccessfully()
     {
@@ -275,6 +290,7 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
 
         // Always fail — message is re-enqueued to the DLQ until max attempts exceeded
         var failureState = new TransientFailureState { FailCount = int.MaxValue };
+        var terminalSink = new RecordingTerminalFailureSink();
 
         var fakeTime = new FakeTimeProvider();
         // Requires 2 DLQ ticks: tick 1 re-enqueues (attempt 1), tick 2 sees attempt >= max (1) and skips
@@ -282,6 +298,7 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
         {
             services.AddSingleton(failureState);
+            services.AddSingleton<ITerminalFailureSink<OrderMessage>>(terminalSink);
             services.AddSingleton<TimeProvider>(fakeTime);
             services.AddKafkaWorker<OrderMessage, TransientFailureHandlerJson>(context.Configuration);
             services.AddKafkaWorkerDeadLetter<OrderMessage>(context.Configuration);
@@ -317,5 +334,69 @@ public class JsonConsumerTests(ITestOutputHelper testOutputHelper)
         Assert.True(logProvider.HasLogged("exceeded max reprocess attempts"));
         Assert.False(logProvider.HasLogged("Successfully processed message"));
         Assert.False(logProvider.HasLogged("Invalid message detected"));
+
+        // The terminal failure sink saw the message exactly once, with full context
+        var failure = Assert.Single(terminalSink.Failures);
+        Assert.Equal(TerminalFailureReason.MaxReprocessAttemptsExceeded, failure.Reason);
+        Assert.Equal(42, failure.Message.OrderId);
+        Assert.Equal(topic, failure.SourceTopic);
+        Assert.Equal(1, failure.ReprocessAttempts);
+    }
+
+    [Fact]
+    public async Task PoisonMessage_RawBytesCapturedToDlq()
+    {
+        // Arrange
+        string topic = $"{Guid.NewGuid():N}";
+        string dlqTopic = $"dlq-{topic}";
+        var configurationOverrides = new Dictionary<string, string?>
+        {
+            ["KafkaWorker:Consumer:Topic"] = topic,
+            ["KafkaWorker:Consumer:GroupId"] = $"group-id-{topic}",
+            ["KafkaWorker:Consumer:DeadLetterTopic"] = dlqTopic,
+            ["KafkaWorker:Consumer:DeadLetterProcessingIntervalMinutes"] = "1"
+        };
+
+        const string poisonPayload = "this is not valid json {{{";
+
+        await KafkaHelper.InitializeTopicAsync(topic, "{}");
+        await KafkaHelper.InitializeEmptyTopicAsync(dlqTopic);
+
+        using var cts = new CancellationTokenSource(TestLoggerProvider.WaitTime);
+        var (host, logProvider) = HostBuilderHelper.CreateHost(testOutputHelper, configurationOverrides, (context, services) =>
+        {
+            services.AddKafkaWorker<OrderMessage, OrderMessageHandlerJson>(context.Configuration);
+        });
+
+        // Act
+        var hostTask = Task.Run(async () => await host.RunAsync(cts.Token));
+
+        await logProvider.WaitForLogAsync("Subscribed to kafka", hostTask);
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        await KafkaHelper.PublishMessageAsync(topic, "poison-key", poisonPayload);
+        await logProvider.WaitForLogAsync("captured to dead letter topic", hostTask);
+
+        await cts.CancelAsync();
+        await hostTask;
+
+        // Assert — the handler never saw it, and the DLQ holds the raw bytes verbatim
+        Assert.False(logProvider.HasLogged("Successfully processed message"));
+
+        using var rawConsumer = new Confluent.Kafka.ConsumerBuilder<byte[], byte[]>(new Confluent.Kafka.ConsumerConfig
+        {
+            BootstrapServers = "localhost:9092",
+            GroupId = $"verify-{dlqTopic}",
+            AutoOffsetReset = Confluent.Kafka.AutoOffsetReset.Earliest,
+            EnableAutoCommit = false
+        }).Build();
+        rawConsumer.Subscribe(dlqTopic);
+        var captured = rawConsumer.Consume(TimeSpan.FromSeconds(15));
+        rawConsumer.Close();
+
+        Assert.NotNull(captured);
+        Assert.Equal(poisonPayload, System.Text.Encoding.UTF8.GetString(captured.Message.Value));
+        Assert.Equal("poison-key", System.Text.Encoding.UTF8.GetString(captured.Message.Key));
+        Assert.Equal("true", System.Text.Encoding.UTF8.GetString(captured.Message.Headers.GetLastBytes("deserialization-failed")));
+        Assert.Equal(topic, System.Text.Encoding.UTF8.GetString(captured.Message.Headers.GetLastBytes("original-topic")));
     }
 }

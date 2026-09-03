@@ -46,7 +46,8 @@ dotnet add package KafkaWorker.JsonSchema     # for JSON + Schema Registry
 - **Periodic DLQ reprocessing** — Automatically retry failed messages on a schedule
 - **On-demand DLQ reprocessing** — `IDlqReprocessTrigger<TMessage>` runs a retry batch immediately
 - **Invalid message handling** — Skip retries for messages that will never succeed via `InvalidMessageException`
-- **Poison-message resilient** — Deserialization failures are logged, counted, and skipped — one bad payload can't crash the host
+- **Poison-message capture** — Deserialization failures are captured to the DLQ as raw bytes for manual redrive — one bad payload can't crash the host
+- **Terminal failure sink** — Optionally persist permanently failed messages to durable storage via `ITerminalFailureSink<TMessage>`
 - **Multiple serialization formats** — Avro, JSON (plain and Schema Registry), and Protobuf
 - **Multiple consumers per host** — Register several consumers with different `TMessage` types
 - **Confluent ConsumerConfig overrides** — Customize `AutoOffsetReset`, `SessionTimeoutMs`, etc.
@@ -165,6 +166,6 @@ That's it — the simplest setup consumes and retries with zero DLQ config. See 
 
 Messages flow through your `IMessageHandler<TMessage>`. On success, the offset is committed. On failure, the library retries with exponential backoff. If all retries fail, the message is published to the dead letter topic. The DLQ consumer periodically reprocesses those messages by invoking your handler **in place** so failed messages never reappear on the original topic.
 
-A message that fails deserialization never enters this flow at all — it is logged at `Critical`, counted in metrics, and committed past so the consumer keeps running.
+A message that fails deserialization never enters this flow at all — its raw bytes are captured to the DLQ (marked `deserialization-failed`, never auto-reprocessed) and the offset advances so the consumer keeps running. Without a DLQ it is logged at `Critical` and lost.
 
 Throwing `InvalidMessageException` short-circuits this flow — the message goes directly to the DLQ with no retries, and is permanently skipped during DLQ reprocessing.

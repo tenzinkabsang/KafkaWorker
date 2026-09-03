@@ -122,8 +122,18 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                     }
 
                     // An undeserializable DLQ record would otherwise abort every batch at the same
-                    // offset and wedge the DLQ permanently. Skip it and commit past it.
-                    LogDlqPoisonMessageSkipped(logger, ex, DeadLetterTopic, record.Partition.Value, record.Offset.Value);
+                    // offset and wedge the DLQ permanently. Skip it and commit past it. Records the
+                    // main consumer captured as raw bytes (deserialization-failed header) are
+                    // expected to be undeserializable — they await manual redrive, so skip quietly.
+                    if (string.Equals(record.Message?.Headers.GetValue(KafkaHeaders.DeserializationFailed), "true", StringComparison.OrdinalIgnoreCase))
+                    {
+                        LogCapturedPoisonSkipped(logger, DeadLetterTopic, record.Partition.Value, record.Offset.Value);
+                    }
+                    else
+                    {
+                        LogDlqPoisonMessageSkipped(logger, ex, DeadLetterTopic, record.Partition.Value, record.Offset.Value);
+                    }
+
                     metrics.DlqSkipped.Add(1,
                         new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic),
                         new KeyValuePair<string, object?>("reason", "deserialization_failed"));
@@ -205,6 +215,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
         {
             LogSkippingInvalidMessage(logger, consumeResult.Message.Key);
             metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "invalid"));
+            await NotifyTerminalFailureAsync(consumeResult, TerminalFailureReason.InvalidMessage, error: null, stoppingToken);
             return true;
         }
 
@@ -212,6 +223,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
         {
             LogExceededMaxReprocessAttempts(logger, MaxReprocessAttempts, consumeResult.Message.Key);
             metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "max_attempts"));
+            await NotifyTerminalFailureAsync(consumeResult, TerminalFailureReason.MaxReprocessAttemptsExceeded, error: null, stoppingToken);
             return true;
         }
 
@@ -234,6 +246,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
             // Permanent failure - the message will never succeed, so skip it (commit and move on).
             LogInvalidMessageInPlace(logger, ex, consumeResult.Message.Key);
             metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "invalid"));
+            await NotifyTerminalFailureAsync(consumeResult, TerminalFailureReason.InvalidMessage, ex.Message, stoppingToken);
             return true;
         }
         catch (Exception ex)
@@ -241,6 +254,48 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
             // Reprocessing failed again - re-enqueue to the DLQ for a future tick with an incremented attempt.
             LogInPlaceReprocessFailed(logger, ex, consumeResult.Message.Key);
             return await ReEnqueueToDeadLetterAsync(consumeResult, batchId, ex, stoppingToken);
+        }
+    }
+
+    /// <summary>
+    /// Invokes the optional <see cref="ITerminalFailureSink{TMessage}"/> when a DLQ message is
+    /// permanently skipped. Best-effort: sink failures are logged and never affect the batch or the
+    /// offset commit. When <paramref name="error"/> is null, the message's <c>error-message</c>
+    /// header (the last recorded failure) is used.
+    /// </summary>
+    private async Task NotifyTerminalFailureAsync(
+        ConsumeResult<TKey, TMessage> consumeResult,
+        TerminalFailureReason reason,
+        string? error,
+        CancellationToken stoppingToken)
+    {
+        try
+        {
+            using var scope = serviceScopeFactory.CreateScope();
+            var sink = scope.ServiceProvider.GetService<ITerminalFailureSink<TMessage>>();
+            if (sink is null)
+            {
+                return;
+            }
+
+            await sink.HandleAsync(new TerminalFailure<TMessage>
+            {
+                Message = consumeResult.Message.Value,
+                MessageKey = consumeResult.Message.Key,
+                SourceTopic = consumeResult.Message.Headers.GetValue(KafkaHeaders.OriginalTopic) ?? _kafkaConfig.Topic,
+                Reason = reason,
+                Error = error ?? consumeResult.Message.Headers.GetValue(KafkaHeaders.ErrorMessage),
+                ReprocessAttempts = consumeResult.Message.Headers.GetReprocessAttemptCount(),
+                Headers = consumeResult.Message.Headers
+            }, stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogTerminalFailureSinkFailed(logger, ex, consumeResult.Message.Key);
         }
     }
 
@@ -349,4 +404,10 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
     [LoggerMessage(EventId = 221, Level = LogLevel.Information, Message = "On-demand reprocess trigger received. Running immediate batch for dead letter topic: {DeadLetterTopic}")]
     private static partial void LogTriggeredBatch(ILogger logger, string? deadLetterTopic);
+
+    [LoggerMessage(EventId = 222, Level = LogLevel.Error, Message = "Terminal failure sink threw; the terminal failure record was not persisted. Key: {MessageKey}")]
+    private static partial void LogTerminalFailureSinkFailed(ILogger logger, Exception ex, TKey messageKey);
+
+    [LoggerMessage(EventId = 223, Level = LogLevel.Debug, Message = "Skipping captured raw poison record (awaiting manual redrive). DLQ Topic: {DeadLetterTopic}, Partition: {Partition}, Offset: {Offset}")]
+    private static partial void LogCapturedPoisonSkipped(ILogger logger, string? deadLetterTopic, int partition, long offset);
 }

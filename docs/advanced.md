@@ -84,7 +84,7 @@ The scope is disposed after `HandleMessageAsync` completes, which means the `DbC
 
 ### Deserialization Failures (Poison Messages)
 
-A message that cannot be deserialized never reaches your handler — the failure happens inside `Consume()`, before the retry/DLQ pipeline. The consumer logs it at `Critical` (with topic, partition, and offset), emits the `deserialization_failed` metric, commits past the record, and continues. It is not retried and cannot be sent to the DLQ (the payload can't be represented as your message type). Only genuinely fatal Kafka client errors stop the host.
+A message that cannot be deserialized never reaches your handler — the failure happens inside `Consume()`, before the retry/DLQ pipeline. It can never be retried or auto-reprocessed (the payload can't be represented as your message type), so when a `DeadLetterTopic` is configured the consumer captures its **raw bytes** to the DLQ with a `deserialization-failed: true` header (logged at `Error`), for manual inspection and redrive. Without a DLQ — or if the capture publish itself fails — the record is logged at `Critical` and lost. Either way the consumer emits the `deserialization_failed` metric, commits past the record, and continues. Only genuinely fatal Kafka client errors stop the host.
 
 ### Retry Strategy
 
@@ -131,7 +131,7 @@ You write the `IMessageHandler<TMessage>` — the library handles everything els
 - Retry with exponential backoff and jitter (Polly)
 - Publishing to DLQ with tracking headers
 - DLQ reprocessing on a timer with loop detection
-- Poison-message and tombstone skipping (logged and committed past)
+- Poison-message capture (raw bytes to the DLQ) and tombstone skipping
 - Configuration validation on startup
 - Scoped DI per message
 

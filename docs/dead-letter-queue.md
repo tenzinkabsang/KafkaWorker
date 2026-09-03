@@ -40,6 +40,7 @@ When a message is sent to the DLQ, the library attaches tracking headers:
 | `invalid-message` | Set to `"true"` if the message was rejected via `InvalidMessageException` |
 | `batch-id` | UUID identifying the DLQ reprocessing batch (used for loop detection) |
 | `reprocessed-attempt` | Counter tracking how many times this message has been reprocessed from the DLQ |
+| `deserialization-failed` | Set to `"true"` on raw-bytes records captured when a message failed deserialization; these are never auto-reprocessed |
 
 
 ---
@@ -158,7 +159,7 @@ A message is skipped (not reprocessed) if:
 - It was marked as an **invalid message** (`invalid-message` header is `"true"`)
 - It has exceeded the **maximum reprocess attempts** (`reprocessed-attempt` header ≥ configured max)
 - It is a **tombstone** (null value) — committed past without invoking the handler
-- It **cannot be deserialized** — logged at `Critical`, committed past, and counted in the `dlq.messages_skipped` metric with reason `deserialization_failed`
+- It **cannot be deserialized** — committed past and counted in the `dlq.messages_skipped` metric with reason `deserialization_failed`. A record carrying the `deserialization-failed` header (raw bytes [captured by the main consumer](#poison-message-capture), awaiting manual redrive) is skipped quietly at `Debug`; any other undeserializable record is logged at `Critical`
 
 Tombstones and undeserializable records never end the batch — they are committed past so the DLQ consumer always makes progress.
 
@@ -174,6 +175,66 @@ A consume error that carries no record offset (e.g. a transient broker error) al
 
 {: .important }
 > **Single partition DLQ** — For optimal performance, configure the dead letter topic with a single partition.
+
+{: .important }
+> **Size DLQ retention generously** — the DLQ topic doubles as your failure archive: terminal messages and captured poison records stay in it *only* until the topic's retention expires. Set a long retention on DLQ topics, or make it unlimited:
+> ```bash
+> kafka-configs --alter --topic orders.v1.dlq --add-config retention.ms=-1
+> ```
+
+---
+
+## Poison-Message Capture
+
+A message that fails **deserialization** never reaches your handler and can never be represented as your message type — so it cannot go through the normal typed DLQ flow. Instead, when a `DeadLetterTopic` is configured, the main consumer captures the record's **raw key and value bytes verbatim** to the DLQ, with the usual `original-topic` / `error-message` headers plus `deserialization-failed: true`, and logs at `Error`. Nothing is lost: the record is preserved for inspection and manual redrive (fix the payload or the schema, then republish to the *original* topic).
+
+- The capture uses a plain `byte[]` producer — Schema Registry is **not** involved, so this works even with locked-down registries.
+- The DLQ consumer recognizes the `deserialization-failed` header and skips these records quietly — they are never auto-reprocessed (reprocessing can't succeed until the payload or schema is fixed).
+- Capture is best-effort: if the capture publish itself fails, or no DLQ is configured, the record is logged at `Critical` and lost — same as the pre-capture behavior.
+
+---
+
+## Terminal Failure Sink
+
+The DLQ topic is transport, not an archive — its retention eventually erases terminal failures, and a Kafka topic can't be queried, annotated, or selectively redriven. If you want terminal failures somewhere durable and queryable (a database table, blob storage, an alerting system), implement `ITerminalFailureSink<TMessage>` and register it — the library calls it at the exact moment it permanently gives up on a message:
+
+```csharp
+public class PostgresFailureSink(FailureDbContext db) : ITerminalFailureSink<OrderMessage>
+{
+    public async Task HandleAsync(TerminalFailure<OrderMessage> failure, CancellationToken ct)
+    {
+        db.FailedMessages.Add(new FailedMessageRow
+        {
+            Key = failure.MessageKey?.ToString(),
+            Payload = JsonSerializer.Serialize(failure.Message),
+            SourceTopic = failure.SourceTopic,
+            Reason = failure.Reason.ToString(),
+            Error = failure.Error,
+            Attempts = failure.ReprocessAttempts,
+            FailedAtUtc = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync(ct);
+    }
+}
+```
+
+```csharp
+builder.Services.AddScoped<ITerminalFailureSink<OrderMessage>, PostgresFailureSink>();
+```
+
+Any DI lifetime works — the sink is resolved from a fresh scope per call, so scoped dependencies like an EF Core `DbContext` inject naturally. The sink fires **once per terminal message** (`TerminalFailureReason` says why):
+
+| Reason | Where | Meaning |
+|--------|-------|---------|
+| `InvalidMessage` | DLQ consumer | Marked invalid, or rejected with `InvalidMessageException` during reprocessing |
+| `MaxReprocessAttemptsExceeded` | DLQ consumer | Retries exhausted; permanently skipped |
+| `DeadLetterPublishFailed` | Main consumer | The best-effort DLQ publish failed — the sink is the message's **last chance** to be persisted anywhere |
+| `NoDeadLetterTopicConfigured` | Main consumer | Processing failed with no DLQ configured — also a last-chance call |
+
+A message that reaches the DLQ successfully does *not* fire the sink until it later becomes terminal there. Records that failed deserialization never fire the typed sink — they are [captured as raw bytes](#poison-message-capture) instead.
+
+{: .note }
+> The sink is **best-effort**: an exception it throws is logged at `Error` and never crashes the consumer, stops the batch, or prevents the offset from advancing. If the sink write must never be lost, make the sink itself durable (retry or write-ahead internally).
 
 ---
 
@@ -202,7 +263,7 @@ No configuration is involved. If you don't need on-demand retries, a lower `Dead
 
 ## Handling Terminal Failures
 
-A message becomes **terminal** when it is marked invalid (`InvalidMessageException`) or exceeds `DeadLetterMaxReprocessAttempts`. Terminal messages are skipped with their offsets committed — but they are **not deleted**: they remain in the DLQ topic until its retention expires. This section is the operational runbook for them.
+A message becomes **terminal** when it is marked invalid (`InvalidMessageException`) or exceeds `DeadLetterMaxReprocessAttempts`. Terminal messages are skipped with their offsets committed — but they are **not deleted**: they remain in the DLQ topic until its retention expires. This section is the operational runbook for them. For durable, queryable failure storage beyond the topic's retention, register a [terminal failure sink](#terminal-failure-sink).
 
 ### Detect
 

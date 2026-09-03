@@ -34,12 +34,13 @@ The library emits [OpenTelemetry-compatible metrics](https://learn.microsoft.com
 - `success` — Message processed successfully
 - `invalid` — Message rejected via `InvalidMessageException`
 - `failed` — Message failed after all retries
-- `deserialization_failed` — Message could not be deserialized; skipped and committed past (never reaches the handler or the DLQ)
+- `deserialization_failed` — Message could not be deserialized; skipped and committed past (never reaches the handler; its raw bytes are captured to the DLQ when one is configured)
 
 **`reason`** (on `messages.dlq_published`):
 - `processing_failed` — Message failed after all retries in the main consumer
 - `invalid` — Message rejected via `InvalidMessageException` in the main consumer
 - `reprocess_failed` — Message failed in-place DLQ reprocessing and was re-enqueued to the DLQ
+- `deserialization_failed` — Raw bytes of an undeserializable message captured to the DLQ for manual inspection
 
 **`reason`** (on `dlq.messages_skipped`):
 - `invalid` — Message marked as invalid (will never succeed)

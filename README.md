@@ -37,7 +37,8 @@ dotnet add package KafkaWorker.JsonSchema     # for JSON + Schema Registry
 - **Periodic DLQ reprocessing** *(optional)* — Register `AddKafkaWorkerDeadLetter` to automatically retry failed messages on a schedule. Messages are reprocessed **in place** (via your handler) so they never return to the original topic
 - **On-demand DLQ reprocessing** — Inject `IDlqReprocessTrigger<TMessage>` and call `Trigger()` to run a reprocessing batch immediately (e.g., right after a downstream outage is fixed) instead of waiting for the next tick
 - **Invalid message handling** — Skip retries for messages that will never succeed via `InvalidMessageException`
-- **Poison-message resilient** — A message that fails deserialization is logged, counted, and committed past — one bad payload can't crash the host or wedge the DLQ
+- **Poison-message capture** — A message that fails deserialization can't crash the host or wedge the DLQ: its raw bytes are captured to the DLQ for manual inspection and redrive, and the consumer moves on
+- **Terminal failure sink** *(optional)* — Implement `ITerminalFailureSink<TMessage>` to persist permanently failed messages somewhere durable and queryable (e.g. a database table) at the exact moment the library gives up on them
 - **Multiple serialization formats** — Avro, JSON (plain and with Schema Registry), and Protobuf via separate packages
 - **Multiple consumers per host** — Register several `AddKafkaWorker` calls with different `TMessage` types, each pointing to its own config section
 - **Confluent ConsumerConfig overrides** — Pass an `Action<ConsumerConfig>` callback to customize `AutoOffsetReset`, `SessionTimeoutMs`, and other Confluent settings
@@ -186,7 +187,7 @@ dotnet run --project samples/OrderProducer     # terminal 2
 
 Messages flow through your `IMessageHandler<TMessage>`. On success, the offset is committed. On failure, the library retries with exponential backoff. If all retries fail, the message is published to the dead letter topic. The DLQ consumer periodically reprocesses those messages by invoking your handler **in place** so failed messages never reappear on the original topic. If reprocessing fails again, the message is re-enqueued to the DLQ for a future attempt (bounded by `DeadLetterMaxReprocessAttempts`).
 
-A message that fails deserialization never enters this flow at all — it is logged at `Critical`, counted in metrics, and committed past so the consumer keeps running.
+A message that fails deserialization never enters this flow at all — its raw bytes are captured to the DLQ (marked `deserialization-failed`, never auto-reprocessed) and the offset advances so the consumer keeps running. Without a DLQ it is logged at `Critical` and lost.
 
 Throwing `InvalidMessageException` short-circuits this flow — the message goes directly to the DLQ with no retries, and is permanently skipped during DLQ reprocessing.
 
@@ -378,7 +379,7 @@ The library emits [OpenTelemetry-compatible metrics](https://learn.microsoft.com
 |------------|------|------|-------------|
 | `kafkaworker.messages.processed` | Counter | `topic`, `status` (`success`, `invalid`, `failed`, `deserialization_failed`) | Messages processed |
 | `kafkaworker.messages.processing_duration` | Histogram (ms) | `topic` | Processing duration per message |
-| `kafkaworker.messages.dlq_published` | Counter | `topic`, `dlq_topic`, `reason` (`processing_failed`, `invalid`, `reprocess_failed`) | Messages published to DLQ |
+| `kafkaworker.messages.dlq_published` | Counter | `topic`, `dlq_topic`, `reason` (`processing_failed`, `invalid`, `reprocess_failed`, `deserialization_failed`) | Messages published to DLQ |
 | `kafkaworker.dlq.messages_reprocessed` | Counter | `dlq_topic` | Messages reprocessed in place from DLQ |
 | `kafkaworker.dlq.messages_skipped` | Counter | `dlq_topic`, `reason` (`invalid`, `max_attempts`, `deserialization_failed`) | Messages skipped during DLQ reprocessing |
 
@@ -400,7 +401,8 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 ## Important Notes
 
 - **Scoped DI per message** — `IMessageHandler<TMessage>` is resolved in a new DI scope for each message. Scoped dependencies like EF Core `DbContext` work naturally via constructor injection.
-- **Poison messages are skipped, not fatal** — A message that fails deserialization never reaches your handler, so it cannot be retried or sent to the DLQ. The consumer logs it at `Critical` (with topic/partition/offset), emits a `deserialization_failed` metric, commits past it, and keeps going — one bad payload cannot crash the host or wedge the DLQ.
+- **Poison messages are captured, not fatal** — A message that fails deserialization never reaches your handler and cannot be retried. With a DLQ configured, its raw bytes are captured there verbatim (with a `deserialization-failed` header; never auto-reprocessed) for manual inspection and redrive; without one it is logged at `Critical` and lost. Either way the consumer emits a `deserialization_failed` metric, commits past it, and keeps going — one bad payload cannot crash the host or wedge the DLQ.
+- **Terminal failures can be persisted** — When a message is permanently given up on (invalid, retries exhausted, or lost because DLQ publishing failed or no DLQ is configured), an optional `ITerminalFailureSink<TMessage>` you register is invoked with the message and full failure context — see the [DLQ documentation](https://tenzinkabsang.github.io/KafkaWorker/dead-letter-queue#terminal-failure-sink).
 - **Tombstones commit and continue** — Null-value messages (e.g. compaction tombstones) are skipped without invoking the handler, but their offsets are committed so the consumer always advances.
 - **At-least-once delivery** — An offset is stored only after its message is handled, and stored offsets are committed in the background (every ~5s by default, plus on rebalance and graceful shutdown). After a *hard* crash, messages processed since the last background flush are redelivered on restart — handlers should be idempotent. Tune the window with `AutoCommitIntervalMs` via `configureConsumer`.
 - **Dead-lettered messages are retried out of order** — by the time a DLQ message succeeds, later messages for the same key have usually been processed. Handlers should be idempotent and order-tolerant; see the [DLQ documentation](https://tenzinkabsang.github.io/KafkaWorker/dead-letter-queue) for details and the terminal-failures runbook.
@@ -415,7 +417,7 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 - Consumer subscription, consume loop, and graceful shutdown
 - `StoreOffset()` after every message (success, DLQ publish, DLQ publish failure, tombstone, or deserialization failure), flushed by the client's background auto-commit
 - Retry with exponential backoff and jitter (Polly)
-- Publishing to DLQ with tracking headers (`original-topic`, `error-message`, `invalid-message`, `batch-id`, `reprocessed-attempt`)
+- Publishing to DLQ with tracking headers (`original-topic`, `error-message`, `invalid-message`, `batch-id`, `reprocessed-attempt`, `deserialization-failed`)
 - DLQ reprocessing on a timer with loop detection
 - Configuration validation on startup
 

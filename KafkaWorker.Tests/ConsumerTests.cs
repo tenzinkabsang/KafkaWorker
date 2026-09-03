@@ -15,7 +15,9 @@ public class ConsumerTests : IDisposable
 
     private readonly IConsumer<string, TestMessage> _kafkaConsumer;
     private readonly IProducer<string, TestMessage> _deadLetterProducer;
+    private readonly IProducer<byte[], byte[]> _rawDeadLetterProducer;
     private readonly IMessageHandler<TestMessage> _messageHandler;
+    private readonly ITerminalFailureSink<TestMessage> _terminalSink;
     private readonly ILogger<Consumer<string, TestMessage>> _logger;
     private readonly KafkaWorkerMetrics _metrics;
     private readonly CancellationTokenSource _cts;
@@ -24,6 +26,8 @@ public class ConsumerTests : IDisposable
     {
         _kafkaConsumer = Substitute.For<IConsumer<string, TestMessage>>();
         _deadLetterProducer = Substitute.For<IProducer<string, TestMessage>>();
+        _rawDeadLetterProducer = Substitute.For<IProducer<byte[], byte[]>>();
+        _terminalSink = Substitute.For<ITerminalFailureSink<TestMessage>>();
         _messageHandler = Substitute.For<IMessageHandler<TestMessage>>();
         _logger = Substitute.For<ILogger<Consumer<string, TestMessage>>>();
         _logger.IsEnabled(Arg.Any<LogLevel>()).Returns(true);
@@ -47,7 +51,8 @@ public class ConsumerTests : IDisposable
     private Consumer<string, TestMessage> CreateConsumer(
         string topic = TestTopic,
         string? deadLetterTopic = TestDlqTopic,
-        int maxRetries = 0)
+        int maxRetries = 0,
+        bool registerTerminalSink = true)
     {
         var config = new KafkaWorkerConfig
         {
@@ -62,6 +67,10 @@ public class ConsumerTests : IDisposable
 
         var serviceProvider = Substitute.For<IServiceProvider>();
         serviceProvider.GetService(typeof(IMessageHandler<TestMessage>)).Returns(_messageHandler);
+        if (registerTerminalSink)
+        {
+            serviceProvider.GetService(typeof(ITerminalFailureSink<TestMessage>)).Returns(_terminalSink);
+        }
         var scope = Substitute.For<IServiceScope>();
         scope.ServiceProvider.Returns(serviceProvider);
         var scopeFactory = Substitute.For<IServiceScopeFactory>();
@@ -70,6 +79,7 @@ public class ConsumerTests : IDisposable
         return new Consumer<string, TestMessage>(
             _kafkaConsumer,
             new Lazy<IProducer<string, TestMessage>>(() => _deadLetterProducer),
+            new RawDeadLetterProducer<TestMessage>(() => _rawDeadLetterProducer),
             scopeFactory,
             optionsMonitor,
             _metrics,
@@ -141,7 +151,11 @@ public class ConsumerTests : IDisposable
                 Topic = TestTopic,
                 Partition = new Partition(0),
                 Offset = new Offset(offset),
-                Message = new Message<byte[], byte[]>()
+                Message = new Message<byte[], byte[]>
+                {
+                    Key = "poison-key"u8.ToArray(),
+                    Value = "not-valid-payload"u8.ToArray()
+                }
             },
             new Error(code));
     }
@@ -1139,7 +1153,7 @@ public class ConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ConsumeException_PoisonMessage_DoesNotPublishToDlq()
+    public async Task ConsumeException_PoisonMessage_CapturesRawBytesToDlq()
     {
         var sut = CreateConsumer();
         var callIndex = 0;
@@ -1156,13 +1170,24 @@ public class ConsumerTests : IDisposable
         await WaitUntilCancellationRequestedAsync(_cts);
         await sut.StopAsync(CancellationToken.None);
 
-        // The payload cannot be represented as TMessage, so it is never produced anywhere
+        // The raw key and value are preserved verbatim, marked with the deserialization-failed header
+        await _rawDeadLetterProducer.Received(1).ProduceAsync(
+            TestDlqTopic,
+            Arg.Is<Message<byte[], byte[]>>(m =>
+                System.Text.Encoding.UTF8.GetString(m.Key) == "poison-key" &&
+                System.Text.Encoding.UTF8.GetString(m.Value) == "not-valid-payload" &&
+                HasHeader(m.Headers, KafkaHeaders.DeserializationFailed, "true") &&
+                HasHeader(m.Headers, KafkaHeaders.OriginalTopic, TestTopic) &&
+                HasHeader(m.Headers, KafkaHeaders.ErrorMessage, null)),
+            Arg.Any<CancellationToken>());
+
+        // The typed producer is never involved — the payload cannot be represented as TMessage
         await _deadLetterProducer.DidNotReceive()
             .ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, TestMessage>>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ConsumeException_PoisonMessage_LogsCritical()
+    public async Task ConsumeException_PoisonMessage_WithDlq_LogsErrorCaptured()
     {
         var sut = CreateConsumer();
         var callIndex = 0;
@@ -1180,11 +1205,71 @@ public class ConsumerTests : IDisposable
         await sut.StopAsync(CancellationToken.None);
 
         _logger.Received().Log(
-            LogLevel.Critical,
+            LogLevel.Error,
             Arg.Any<EventId>(),
-            Arg.Is<object>(o => o.ToString()!.Contains("failed to deserialize")),
+            Arg.Is<object>(o => o.ToString()!.Contains("captured to dead letter topic")),
             Arg.Any<Exception?>(),
             Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task ConsumeException_PoisonMessage_NoDlqConfigured_LogsCritical_AndDoesNotCapture()
+    {
+        var sut = CreateConsumer(deadLetterTopic: null);
+        var callIndex = 0;
+        _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (callIndex++ == 0)
+                    throw CreatePoisonException(offset: 5);
+                _cts.Cancel();
+                throw new OperationCanceledException(_cts.Token);
+            });
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        await _rawDeadLetterProducer.DidNotReceive()
+            .ProduceAsync(Arg.Any<string>(), Arg.Any<Message<byte[], byte[]>>(), Arg.Any<CancellationToken>());
+        _logger.Received().Log(
+            LogLevel.Critical,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("will be lost")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+        // Still stored past so the consumer survives
+        _kafkaConsumer.Received(1).StoreOffset(Arg.Is<TopicPartitionOffset>(t => t.Offset.Value == 6));
+    }
+
+    [Fact]
+    public async Task ConsumeException_PoisonMessage_CaptureFails_LogsCritical_StillStoresPastOffset()
+    {
+        var sut = CreateConsumer();
+        var callIndex = 0;
+        _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
+            .Returns(_ =>
+            {
+                if (callIndex++ == 0)
+                    throw CreatePoisonException(offset: 5);
+                _cts.Cancel();
+                throw new OperationCanceledException(_cts.Token);
+            });
+        _rawDeadLetterProducer.ProduceAsync(Arg.Any<string>(), Arg.Any<Message<byte[], byte[]>>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new KafkaException(new Error(ErrorCode.BrokerNotAvailable)));
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        // Capture is best-effort: the failure is logged as lost, but the consumer never wedges
+        _logger.Received().Log(
+            LogLevel.Critical,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("will be lost")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+        _kafkaConsumer.Received(1).StoreOffset(Arg.Is<TopicPartitionOffset>(t => t.Offset.Value == 6));
     }
 
     [Fact]
@@ -1246,6 +1331,110 @@ public class ConsumerTests : IDisposable
         _kafkaConsumer.Received(1).Close();
         _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<ConsumeResult<string, TestMessage>>());
         _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<TopicPartitionOffset>());
+    }
+
+    #endregion
+
+    #region Terminal failure sink
+
+    [Fact]
+    public async Task NoDlqConfigured_HandlerFailure_NotifiesTerminalSink()
+    {
+        var sut = CreateConsumer(deadLetterTopic: null);
+        var consumeResult = SetupSingleMessage();
+        _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("downstream exploded"));
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        await _terminalSink.Received(1).HandleAsync(
+            Arg.Is<TerminalFailure<TestMessage>>(f =>
+                f.Reason == TerminalFailureReason.NoDeadLetterTopicConfigured &&
+                f.Message == consumeResult.Message.Value &&
+                Equals(f.MessageKey, TestMessageKey) &&
+                f.SourceTopic == TestTopic &&
+                f.Error == "downstream exploded"),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DlqPublishFailure_NotifiesTerminalSink_WithOriginalError()
+    {
+        var sut = CreateConsumer();
+        var consumeResult = SetupSingleMessage();
+        _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("processing failed"));
+        _deadLetterProducer.ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, TestMessage>>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new KafkaException(new Error(ErrorCode.BrokerNotAvailable)));
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        // The sink receives the processing error (why the message failed), not the publish error
+        await _terminalSink.Received(1).HandleAsync(
+            Arg.Is<TerminalFailure<TestMessage>>(f =>
+                f.Reason == TerminalFailureReason.DeadLetterPublishFailed &&
+                f.Message == consumeResult.Message.Value &&
+                f.Error == "processing failed"),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task HandlerFailure_DlqPublishSucceeds_DoesNotNotifySink()
+    {
+        var sut = CreateConsumer();
+        SetupSingleMessage();
+        _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("fail"));
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        // The message reached the DLQ — it is not terminal yet (the DLQ consumer owns it now)
+        await _terminalSink.DidNotReceive()
+            .HandleAsync(Arg.Any<TerminalFailure<TestMessage>>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task TerminalSinkThrows_StillStoresOffset_AndLogsError()
+    {
+        var sut = CreateConsumer(deadLetterTopic: null);
+        var consumeResult = SetupSingleMessage();
+        _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("fail"));
+        _terminalSink.HandleAsync(Arg.Any<TerminalFailure<TestMessage>>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("sink db down"));
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        _kafkaConsumer.Received(1).StoreOffset(consumeResult);
+        _logger.Received().Log(
+            LogLevel.Error,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Terminal failure sink threw")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task TerminalSinkNotRegistered_NoDlq_StillStoresOffset()
+    {
+        var sut = CreateConsumer(deadLetterTopic: null, registerTerminalSink: false);
+        var consumeResult = SetupSingleMessage();
+        _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new InvalidOperationException("fail"));
+
+        await sut.StartAsync(_cts.Token);
+        await WaitUntilCancellationRequestedAsync(_cts);
+        await sut.StopAsync(CancellationToken.None);
+
+        _kafkaConsumer.Received(1).StoreOffset(consumeResult);
     }
 
     #endregion
