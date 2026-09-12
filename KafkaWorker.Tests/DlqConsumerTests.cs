@@ -39,8 +39,11 @@ public class DlqConsumerTests : IDisposable
 
     public void Dispose()
     {
+        _kafkaConsumer.Dispose();
+        _producer.Dispose();
         _cts.Dispose();
         _metrics.Dispose();
+        GC.SuppressFinalize(this);
     }
 
     #region Helpers
@@ -196,7 +199,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_SubscribesToDeadLetterTopic()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
@@ -207,7 +210,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ClosesConsumerAfterBatch()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
@@ -218,7 +221,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ClosesConsumer_EvenOnError()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
             .Throws(new KafkaException(new Error(ErrorCode.BrokerNotAvailable)));
 
@@ -230,7 +233,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_LogsFinishedProcessing()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
@@ -250,7 +253,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_InvokesHandlerAndCommits_WithoutProducing()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
 
@@ -268,7 +271,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_PassesMessageValueToHandler()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var value = new TestMessage { Data = "reprocess-me" };
         var dlqMessage = CreateDlqConsumeResult(value: value);
         SetupConsumeSequence(dlqMessage);
@@ -282,7 +285,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_CommitsOffsetAfterSuccessfulReprocess()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
 
@@ -295,7 +298,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ProcessesMultipleMessagesInOrder()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateDlqConsumeResult(key: "key-1");
         var msg2 = CreateDlqConsumeResult(key: "key-2");
         SetupConsumeSequence(msg1, msg2);
@@ -316,7 +319,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_CommitsOffsetPerMessage()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateDlqConsumeResult(key: "key-1");
         var msg2 = CreateDlqConsumeResult(key: "key-2");
         SetupConsumeSequence(msg1, msg2);
@@ -329,7 +332,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_LogsSuccessfulReprocess()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
 
@@ -350,7 +353,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_StopsOnNullConsumeResult()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
@@ -363,7 +366,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_NullValueMessage_CommitsAndContinues()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var tombstone = new ConsumeResult<string, TestMessage>
         {
             Topic = TestDlqTopic,
@@ -388,7 +391,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_StopsOnPartitionEof()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var eofResult = new ConsumeResult<string, TestMessage>
         {
             Topic = TestDlqTopic,
@@ -409,7 +412,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_NullEofBreaksBatch_DoesNotContinueToNextMessage()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var eofResult = new ConsumeResult<string, TestMessage>
         {
             Topic = TestDlqTopic,
@@ -435,7 +438,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ConsumeException_SkipsPoisonMessage_AndContinuesBatch()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var validMsg = CreateDlqConsumeResult(key: "after-poison");
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
@@ -463,7 +466,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ConsumeException_NoRecordOffset_EndsBatchWithoutCommit()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
             .Returns(_ => throw new ConsumeException(
                 new ConsumeResult<byte[], byte[]>
@@ -490,7 +493,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_SkipsInvalidMessage_WithoutInvokingHandler()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(isInvalidMessage: true);
         SetupConsumeSequence(invalidMsg);
 
@@ -503,7 +506,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_InvalidMessage_CommitsOffset()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(isInvalidMessage: true);
         SetupConsumeSequence(invalidMsg);
 
@@ -516,7 +519,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_InvalidMessage_LogsWarning()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(isInvalidMessage: true);
         SetupConsumeSequence(invalidMsg);
 
@@ -533,7 +536,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ContinuesProcessingAfterInvalidMessage()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(key: "invalid-key", isInvalidMessage: true);
         var validMsg = CreateDlqConsumeResult(key: "valid-key");
         SetupConsumeSequence(invalidMsg, validMsg);
@@ -552,7 +555,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_SkipsMessageExceedingMaxReprocessAttempts()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var exceededMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
         SetupConsumeSequence(exceededMsg);
 
@@ -565,7 +568,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_MaxReprocessExceeded_CommitsOffset()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var exceededMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
         SetupConsumeSequence(exceededMsg);
 
@@ -578,7 +581,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_MaxReprocessExceeded_LogsWarning()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var exceededMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
         SetupConsumeSequence(exceededMsg);
 
@@ -595,7 +598,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_MessageAtExactMaxAttempts_IsSkipped()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var atMaxMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
         SetupConsumeSequence(atMaxMsg);
 
@@ -608,7 +611,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_MessageBelowMaxAttempts_IsProcessed()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var belowMaxMsg = CreateDlqConsumeResult(reprocessAttempt: 2);
         SetupConsumeSequence(belowMaxMsg);
 
@@ -621,7 +624,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_MessageAboveMaxAttempts_IsSkipped()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var aboveMaxMsg = CreateDlqConsumeResult(reprocessAttempt: 4);
         SetupConsumeSequence(aboveMaxMsg);
 
@@ -634,7 +637,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ContinuesProcessingAfterExceededMessage()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var exceededMsg = CreateDlqConsumeResult(key: "exceeded-key", reprocessAttempt: 3);
         var validMsg = CreateDlqConsumeResult(key: "valid-key");
         SetupConsumeSequence(exceededMsg, validMsg);
@@ -653,7 +656,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_StopsWhenEncountersCurrentBatchId()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msgWithCurrentBatchId = CreateDlqConsumeResult(key: "looped-key", batchId: TestBatchId);
         SetupConsumeSequence(msgWithCurrentBatchId);
 
@@ -668,7 +671,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ProcessesMessagesWithDifferentBatchId()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg = CreateDlqConsumeResult(key: "key-1", batchId: "old-batch-id");
         SetupConsumeSequence(msg);
 
@@ -682,7 +685,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ProcessesMessagesBeforeCurrentBatchIdEncountered()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateDlqConsumeResult(key: "key-1", batchId: "old-batch");
         var msg2 = CreateDlqConsumeResult(key: "key-2", batchId: TestBatchId);
         SetupConsumeSequence(msg1, msg2);
@@ -698,7 +701,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_MessageWithNoBatchId_IsProcessedNormally()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msgNoBatchId = CreateDlqConsumeResult(key: "key-no-batch", batchId: null);
         SetupConsumeSequence(msgNoBatchId);
 
@@ -715,7 +718,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_HandlerFails_ReEnqueuesToDlqWithIncrementedAttempt()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult(reprocessAttempt: 0);
         SetupConsumeSequence(dlqMessage);
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
@@ -737,7 +740,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_HandlerFails_IncrementsAttemptFromPreviousValue()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 5);
+        using var sut = CreateConsumer(maxReprocessAttempts: 5);
         var dlqMessage = CreateDlqConsumeResult(reprocessAttempt: 2);
         SetupConsumeSequence(dlqMessage);
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
@@ -755,7 +758,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_HandlerFails_ReEnqueueSucceeds_CommitsOffset()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
@@ -771,7 +774,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_HandlerThrowsInvalidMessage_SkipsAndCommits()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
@@ -789,7 +792,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ReEnqueueProduceFails_StopsBatchWithoutCommitting()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
@@ -806,7 +809,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ReEnqueueProduceFails_LogsError()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
@@ -827,7 +830,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ReEnqueueFailure_SecondMessageNotProcessed()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateDlqConsumeResult(key: "key-fail");
         var msg2 = CreateDlqConsumeResult(key: "key-ok");
         SetupConsumeSequence(msg1, msg2);
@@ -850,7 +853,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_StopsProcessingOnCancellation()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateDlqConsumeResult(key: "key-1");
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
@@ -872,7 +875,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_MixedMessages_ProcessesCorrectly()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var invalidMsg = CreateDlqConsumeResult(key: "invalid", isInvalidMessage: true);
         var exceededMsg = CreateDlqConsumeResult(key: "exceeded", reprocessAttempt: 3);
         var validMsg = CreateDlqConsumeResult(key: "valid");
@@ -890,7 +893,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_ReEnqueueFailsAfterSkippedMessages_StopsBatchCorrectly()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var invalidMsg = CreateDlqConsumeResult(key: "invalid", isInvalidMessage: true);
         var failMsg = CreateDlqConsumeResult(key: "will-fail");
         var afterFailMsg = CreateDlqConsumeResult(key: "after-fail");
@@ -912,7 +915,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_SkippedMessagesBeforeBatchIdLoop_AllCommitted()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 2);
+        using var sut = CreateConsumer(maxReprocessAttempts: 2);
         var exceededMsg = CreateDlqConsumeResult(key: "exceeded", reprocessAttempt: 2);
         var loopMsg = CreateDlqConsumeResult(key: "loop", batchId: TestBatchId);
         SetupConsumeSequence(exceededMsg, loopMsg);
@@ -929,7 +932,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_EmptyBatch_NoProcessingOrCommits()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
             .Returns((ConsumeResult<string, TestMessage>)null!);
 
@@ -944,7 +947,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_AllMessagesSkipped_AllOffsetsCommitted()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 1);
+        using var sut = CreateConsumer(maxReprocessAttempts: 1);
         var invalidMsg = CreateDlqConsumeResult(key: "invalid-1", isInvalidMessage: true);
         var exceededMsg = CreateDlqConsumeResult(key: "exceeded-1", reprocessAttempt: 1);
         SetupConsumeSequence(invalidMsg, exceededMsg);
@@ -976,7 +979,7 @@ public class DlqConsumerTests : IDisposable
     public async Task ExecuteAsync_DoesNotProcessBatchBeforeTimerInterval()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime);
+        using var sut = CreateConsumer(timeProvider: fakeTime);
 
         await sut.StartAsync(_cts.Token);
         await Task.Delay(50);
@@ -990,7 +993,7 @@ public class DlqConsumerTests : IDisposable
     public async Task ExecuteAsync_ProcessesBatchAfterTimerInterval()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime);
+        using var sut = CreateConsumer(timeProvider: fakeTime);
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.StartAsync(_cts.Token);
@@ -1005,7 +1008,7 @@ public class DlqConsumerTests : IDisposable
     public async Task ExecuteAsync_ProcessesMultipleBatchesOnMultipleTicks()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime);
+        using var sut = CreateConsumer(timeProvider: fakeTime);
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.StartAsync(_cts.Token);
@@ -1021,7 +1024,7 @@ public class DlqConsumerTests : IDisposable
     public async Task ExecuteAsync_RespectsConfiguredInterval()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime, processingIntervalMinutes: 5);
+        using var sut = CreateConsumer(timeProvider: fakeTime, processingIntervalMinutes: 5);
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.StartAsync(_cts.Token);
@@ -1041,7 +1044,7 @@ public class DlqConsumerTests : IDisposable
     public async Task ExecuteAsync_LogsWarningOnGracefulShutdown()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime);
+        using var sut = CreateConsumer(timeProvider: fakeTime);
 
         await sut.StartAsync(_cts.Token);
         await Task.Delay(50); // Let ExecuteAsync reach Task.Delay
@@ -1059,7 +1062,7 @@ public class DlqConsumerTests : IDisposable
     public async Task ExecuteAsync_LogsCriticalOnBatchError()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime);
+        using var sut = CreateConsumer(timeProvider: fakeTime);
         _kafkaConsumer.When(c => c.Subscribe(Arg.Any<string>()))
             .Throw(new InvalidOperationException("subscription failed"));
 
@@ -1080,7 +1083,7 @@ public class DlqConsumerTests : IDisposable
     public async Task Trigger_WakesConsumerAndRunsBatch_WithoutAdvancingClock()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime);
+        using var sut = CreateConsumer(timeProvider: fakeTime);
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.StartAsync(_cts.Token);
@@ -1099,7 +1102,7 @@ public class DlqConsumerTests : IDisposable
     public async Task Trigger_RepeatedCallsBeforeBatch_CoalesceIntoOneBatch()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime);
+        using var sut = CreateConsumer(timeProvider: fakeTime);
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         // Multiple triggers before the consumer starts waiting — must coalesce
@@ -1119,7 +1122,7 @@ public class DlqConsumerTests : IDisposable
     public async Task Trigger_AfterTimerTick_RunsImmediateSecondBatch()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime);
+        using var sut = CreateConsumer(timeProvider: fakeTime);
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.StartAsync(_cts.Token);
@@ -1139,7 +1142,7 @@ public class DlqConsumerTests : IDisposable
     public async Task Trigger_DoesNotDisturbRegularSchedule()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime);
+        using var sut = CreateConsumer(timeProvider: fakeTime);
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.StartAsync(_cts.Token);
@@ -1159,7 +1162,7 @@ public class DlqConsumerTests : IDisposable
     public async Task ExecuteAsync_ClosesConsumerOnEachTick()
     {
         var fakeTime = new FakeTimeProvider();
-        var sut = CreateConsumer(timeProvider: fakeTime);
+        using var sut = CreateConsumer(timeProvider: fakeTime);
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
         await sut.StartAsync(_cts.Token);
@@ -1178,7 +1181,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_InvalidHeaderSkip_NotifiesTerminalSink()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(isInvalidMessage: true, reprocessAttempt: 2);
         SetupConsumeSequence(invalidMsg);
 
@@ -1196,7 +1199,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_MaxAttemptsSkip_NotifiesTerminalSink()
     {
-        var sut = CreateConsumer(maxReprocessAttempts: 3);
+        using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var exceededMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
         SetupConsumeSequence(exceededMsg);
 
@@ -1213,7 +1216,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_InvalidDuringReprocess_NotifiesTerminalSinkWithError()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
@@ -1231,7 +1234,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_SuccessfulReprocess_DoesNotNotifySink()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         SetupConsumeSequence(CreateDlqConsumeResult());
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
@@ -1243,7 +1246,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_FailedReprocess_ReEnqueued_DoesNotNotifySink()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         SetupConsumeSequence(CreateDlqConsumeResult(reprocessAttempt: 1));
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("still failing"));
@@ -1258,7 +1261,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_TerminalSinkThrows_StillCommitsAndContinues()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(key: "invalid", isInvalidMessage: true);
         var normalMsg = CreateDlqConsumeResult(key: "normal");
         SetupConsumeSequence(invalidMsg, normalMsg);
@@ -1285,7 +1288,7 @@ public class DlqConsumerTests : IDisposable
     [Fact]
     public async Task ProcessBatch_CapturedPoisonRecord_SkipsQuietly_WithoutCriticalLog()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
             .Returns(_ =>

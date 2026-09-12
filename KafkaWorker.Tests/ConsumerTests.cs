@@ -37,8 +37,12 @@ public class ConsumerTests : IDisposable
 
     public void Dispose()
     {
+        _kafkaConsumer.Dispose();
+        _deadLetterProducer.Dispose();
+        _rawDeadLetterProducer.Dispose();
         _cts.Dispose();
         _metrics.Dispose();
+        GC.SuppressFinalize(this);
     }
 
     #region Helpers
@@ -229,7 +233,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_SubscribesToConfiguredTopic()
     {
-        var sut = CreateConsumer(topic: "my-custom-topic");
+        using var sut = CreateConsumer(topic: "my-custom-topic");
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
@@ -247,7 +251,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_ClosesConsumerOnShutdown()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
@@ -265,7 +269,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_ClosesConsumer_EvenOnFatalError()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
@@ -285,7 +289,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_LogsWarningOnGracefulShutdown()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ =>
             {
@@ -308,7 +312,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_LogsCriticalOnFatalError()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ => throw new InvalidOperationException("fatal"));
 
@@ -333,7 +337,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_HandlesMessageAndStoresOffset()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var consumeResult = SetupSingleMessage();
 
         await sut.StartAsync(_cts.Token);
@@ -350,7 +354,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_HandlesMultipleMessagesInOrder()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateConsumeResult("key-1", new TestMessage { Data = "first" });
         var msg2 = CreateConsumeResult("key-2", new TestMessage { Data = "second" });
         SetupConsumeSequence(msg1, msg2);
@@ -371,7 +375,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_StoresOffsetPerMessage()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateConsumeResult("key-1");
         var msg2 = CreateConsumeResult("key-2");
         SetupConsumeSequence(msg1, msg2);
@@ -392,7 +396,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_SkipsNullConsumeResult()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ =>
@@ -415,7 +419,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_NullValueMessage_SkipsHandlerButStoresOffset()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var nullResult = CreateNullMessageResult();
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
@@ -440,7 +444,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_SkipsPartitionEofMessage()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var eofResult = CreatePartitionEofResult();
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
@@ -464,7 +468,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ExecuteAsync_HandlesValidMessageAfterSkippingNullAndEof()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var nullResult = CreateNullMessageResult();
         var eofResult = CreatePartitionEofResult();
         var validResult = CreateConsumeResult();
@@ -489,7 +493,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task HandlerFailure_PublishesToDeadLetterTopic()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("processing failed"));
@@ -505,7 +509,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task HandlerFailure_DlqMessageContainsOriginalKeyAndValue()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var originalValue = new TestMessage { Data = "important-data" };
         SetupSingleMessage(key: "my-key", value: originalValue);
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
@@ -526,7 +530,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task HandlerFailure_DlqMessageContainsOriginalTopicHeader()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -545,7 +549,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task HandlerFailure_DlqMessageContainsErrorMessageHeader()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("something broke"));
@@ -564,7 +568,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task HandlerFailure_DlqMessageCopiesOriginalHeaders()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var originalHeaders = new Headers
         {
             { "correlation-id", System.Text.Encoding.UTF8.GetBytes("abc-123") }
@@ -587,7 +591,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task HandlerFailure_StoresOffsetAfterDlqPublish()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var consumeResult = SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -602,7 +606,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task HandlerFailure_NormalException_NoInvalidMessageHeader()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("normal failure"));
@@ -621,7 +625,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task HandlerFailure_NullOriginalHeaders_DoesNotThrow()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         // Create a message with null headers
         var result = new ConsumeResult<string, TestMessage>
         {
@@ -657,7 +661,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task InvalidMessage_BypassesRetryAndPublishesToDlq()
     {
-        var sut = CreateConsumer(maxRetries: 3);
+        using var sut = CreateConsumer(maxRetries: 3);
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidMessageException("bad schema"));
@@ -677,7 +681,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task InvalidMessage_DlqMessageContainsInvalidMessageHeader()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidMessageException("bad data"));
@@ -696,7 +700,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task InvalidMessage_StoresOffset()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var consumeResult = SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidMessageException("bad"));
@@ -711,7 +715,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task InvalidMessage_DlqMessageContainsErrorMessageFromException()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidMessageException("invalid OrderId format"));
@@ -734,7 +738,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task NoDlqConfigured_DoesNotPublishToDlq()
     {
-        var sut = CreateConsumer(deadLetterTopic: null);
+        using var sut = CreateConsumer(deadLetterTopic: null);
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -750,7 +754,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task NoDlqConfigured_EmptyStringDeadLetterTopic_DoesNotPublishToDlq()
     {
-        var sut = CreateConsumer(deadLetterTopic: "   ");
+        using var sut = CreateConsumer(deadLetterTopic: "   ");
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -766,7 +770,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task NoDlqConfigured_LogsWarningAboutMessageLoss()
     {
-        var sut = CreateConsumer(deadLetterTopic: null);
+        using var sut = CreateConsumer(deadLetterTopic: null);
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -786,7 +790,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task NoDlqConfigured_StillStoresOffset()
     {
-        var sut = CreateConsumer(deadLetterTopic: null);
+        using var sut = CreateConsumer(deadLetterTopic: null);
         var consumeResult = SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -801,7 +805,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task NoDlqConfigured_InvalidMessage_DoesNotPublishToDlq()
     {
-        var sut = CreateConsumer(deadLetterTopic: null);
+        using var sut = CreateConsumer(deadLetterTopic: null);
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidMessageException("bad"));
@@ -817,7 +821,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task NoDlqConfigured_InvalidMessage_StillStoresOffset()
     {
-        var sut = CreateConsumer(deadLetterTopic: null);
+        using var sut = CreateConsumer(deadLetterTopic: null);
         var consumeResult = SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidMessageException("bad"));
@@ -836,7 +840,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task DlqPublishFailure_DoesNotCrashConsumer_ContinuesProcessing()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateConsumeResult("key-1");
         var msg2 = CreateConsumeResult("key-2");
         SetupConsumeSequence(msg1, msg2);
@@ -869,7 +873,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task DlqPublishFailure_LogsCritical()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -891,7 +895,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task DlqPublishFailure_StillStoresOffset()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var consumeResult = SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -912,7 +916,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task Retry_RetriesConfiguredNumberOfTimes()
     {
-        var sut = CreateConsumer(maxRetries: 2);
+        using var sut = CreateConsumer(maxRetries: 2);
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("transient"));
@@ -931,7 +935,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task Retry_ZeroRetries_NoRetryAttempts()
     {
-        var sut = CreateConsumer(maxRetries: 0);
+        using var sut = CreateConsumer(maxRetries: 0);
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -948,7 +952,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task Retry_SucceedsOnSecondAttempt_DoesNotPublishToDlq()
     {
-        var sut = CreateConsumer(maxRetries: 2);
+        using var sut = CreateConsumer(maxRetries: 2);
         SetupSingleMessage();
 
         var callCount = 0;
@@ -971,7 +975,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task Retry_SucceedsOnSecondAttempt_StoresOffset()
     {
-        var sut = CreateConsumer(maxRetries: 2);
+        using var sut = CreateConsumer(maxRetries: 2);
         var consumeResult = SetupSingleMessage();
 
         var callCount = 0;
@@ -993,7 +997,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task Retry_InvalidMessageException_NotRetried_EvenWithRetriesConfigured()
     {
-        var sut = CreateConsumer(maxRetries: 3);
+        using var sut = CreateConsumer(maxRetries: 3);
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidMessageException("permanent failure"));
@@ -1010,7 +1014,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task Retry_AllRetriesExhausted_PublishesToDlq()
     {
-        var sut = CreateConsumer(maxRetries: 1);
+        using var sut = CreateConsumer(maxRetries: 1);
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("persistent failure"));
@@ -1034,7 +1038,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ContinuesProcessing_AfterFailedMessage()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateConsumeResult("key-fail");
         var msg2 = CreateConsumeResult("key-success");
         SetupConsumeSequence(msg1, msg2);
@@ -1063,7 +1067,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ContinuesProcessing_AfterInvalidMessage()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateConsumeResult("key-invalid-msg");
         var msg2 = CreateConsumeResult("key-good");
         SetupConsumeSequence(msg1, msg2);
@@ -1090,7 +1094,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ContinuesProcessing_AfterDlqPublishFailure()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var msg1 = CreateConsumeResult("key-dlq-fail");
         var msg2 = CreateConsumeResult("key-ok");
         SetupConsumeSequence(msg1, msg2);
@@ -1125,7 +1129,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ConsumeException_PoisonMessage_StoresPastFailedOffset_AndContinues()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var validResult = CreateConsumeResult();
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
@@ -1155,7 +1159,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ConsumeException_PoisonMessage_CapturesRawBytesToDlq()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ =>
@@ -1189,7 +1193,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ConsumeException_PoisonMessage_WithDlq_LogsErrorCaptured()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ =>
@@ -1215,7 +1219,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ConsumeException_PoisonMessage_NoDlqConfigured_LogsCritical_AndDoesNotCapture()
     {
-        var sut = CreateConsumer(deadLetterTopic: null);
+        using var sut = CreateConsumer(deadLetterTopic: null);
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ =>
@@ -1245,7 +1249,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ConsumeException_PoisonMessage_CaptureFails_LogsCritical_StillStoresPastOffset()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ =>
@@ -1275,7 +1279,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ConsumeException_UnsetOffset_ContinuesWithoutStoring()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var validResult = CreateConsumeResult();
         var callIndex = 0;
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
@@ -1310,7 +1314,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task ConsumeException_FatalError_RethrowsAndClosesConsumer()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(_ => throw new ConsumeException(
                 new ConsumeResult<byte[], byte[]>
@@ -1340,7 +1344,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task NoDlqConfigured_HandlerFailure_NotifiesTerminalSink()
     {
-        var sut = CreateConsumer(deadLetterTopic: null);
+        using var sut = CreateConsumer(deadLetterTopic: null);
         var consumeResult = SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("downstream exploded"));
@@ -1362,7 +1366,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task DlqPublishFailure_NotifiesTerminalSink_WithOriginalError()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var consumeResult = SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("processing failed"));
@@ -1385,7 +1389,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task HandlerFailure_DlqPublishSucceeds_DoesNotNotifySink()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -1402,7 +1406,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task TerminalSinkThrows_StillStoresOffset_AndLogsError()
     {
-        var sut = CreateConsumer(deadLetterTopic: null);
+        using var sut = CreateConsumer(deadLetterTopic: null);
         var consumeResult = SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -1425,7 +1429,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task TerminalSinkNotRegistered_NoDlq_StillStoresOffset()
     {
-        var sut = CreateConsumer(deadLetterTopic: null, registerTerminalSink: false);
+        using var sut = CreateConsumer(deadLetterTopic: null, registerTerminalSink: false);
         var consumeResult = SetupSingleMessage();
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("fail"));
@@ -1444,7 +1448,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task CancellationDuringProcessing_DoesNotPublishToDlq()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var consumeResult = CreateConsumeResult();
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(consumeResult);
@@ -1467,7 +1471,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task CancellationDuringProcessing_DoesNotStoreOffset()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var consumeResult = CreateConsumeResult();
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(consumeResult);
@@ -1489,7 +1493,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task CancellationDuringProcessing_WithRetriesConfigured_DoesNotPublishToDlq()
     {
-        var sut = CreateConsumer(maxRetries: 3);
+        using var sut = CreateConsumer(maxRetries: 3);
         var consumeResult = CreateConsumeResult();
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(consumeResult);
@@ -1513,7 +1517,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task CancellationDuringProcessing_LogsShutdownWarning()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var consumeResult = CreateConsumeResult();
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(consumeResult);
@@ -1540,7 +1544,7 @@ public class ConsumerTests : IDisposable
     [Fact]
     public async Task CancellationDuringProcessing_ClosesConsumer()
     {
-        var sut = CreateConsumer();
+        using var sut = CreateConsumer();
         var consumeResult = CreateConsumeResult();
         _kafkaConsumer.Consume(Arg.Any<CancellationToken>())
             .Returns(consumeResult);

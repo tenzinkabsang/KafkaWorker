@@ -53,7 +53,7 @@ public static class KafkaHelper
         TMessage message,
         Func<CachedSchemaRegistryClient, ISerializer<TMessage>> serializer) where TMessage : class
     {
-        var schemaRegistry = new CachedSchemaRegistryClient(new SchemaRegistryConfig { Url = SchemaRegistryUrl });
+        using var schemaRegistry = new CachedSchemaRegistryClient(new SchemaRegistryConfig { Url = SchemaRegistryUrl });
         var config = new ProducerConfig { BootstrapServers = BootstrapServers };
 
         using var producer = new ProducerBuilder<string, TMessage>(config)
