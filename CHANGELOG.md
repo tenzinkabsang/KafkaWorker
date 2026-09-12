@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Updated dependencies: `Confluent.Kafka` and the three `Confluent.SchemaRegistry.Serdes.*`
+  add-ons to 2.15.1, and the net10.0 target to `Microsoft.Extensions.*` 10.0.12 (servicing
+  patches; the net8.0 target stays on 8.0.x).
+
 ## [2.4.0] - 2026-09-03
 
 ### Added
