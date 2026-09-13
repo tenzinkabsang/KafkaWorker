@@ -55,41 +55,7 @@ internal sealed partial class Consumer<TKey, TMessage>(
 
             LogSubscribed(logger, Topic);
 
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                ConsumeResult<TKey, TMessage> consumeResult;
-                try
-                {
-                    consumeResult = consumer.Consume(stoppingToken);
-                }
-                catch (ConsumeException ex) when (!ex.Error.IsFatal)
-                {
-                    // A message that cannot be deserialized would otherwise crash the host and
-                    // then be re-consumed on restart, forever. Capture its raw bytes to the DLQ
-                    // when possible, then skip past it.
-                    await SkipPoisonMessageAsync(ex, stoppingToken);
-                    continue;
-                }
-
-                if (consumeResult == null || consumeResult.IsPartitionEOF)
-                {
-                    continue;
-                }
-
-                if (consumeResult.Message?.Value == null)
-                {
-                    // Tombstone (null value): nothing to process, but store the offset so the consumer advances.
-                    LogTombstoneSkipped(logger, Topic, consumeResult.Partition.Value, consumeResult.Offset.Value);
-                    consumer.StoreOffset(consumeResult);
-                    continue;
-                }
-
-                await ProcessMessageWithRetryAsync(consumeResult, stoppingToken);
-
-                // Storing (not committing) is deliberate: the client's background auto-commit flushes
-                // stored offsets periodically, on rebalance, and on Close() — no per-message round trip.
-                consumer.StoreOffset(consumeResult);
-            }
+            await RunSingleMessageLoopAsync(stoppingToken);
 
             LogFinishedExecuting(logger, Topic);
         }
@@ -105,6 +71,49 @@ internal sealed partial class Consumer<TKey, TMessage>(
         finally
         {
             consumer.Close();
+        }
+    }
+
+    /// <summary>
+    /// Consumes and processes one message at a time, storing its offset once it has been handled or
+    /// dead lettered. Offsets reach the broker through the client's background auto-commit.
+    /// </summary>
+    private async Task RunSingleMessageLoopAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            ConsumeResult<TKey, TMessage> consumeResult;
+            try
+            {
+                consumeResult = consumer.Consume(stoppingToken);
+            }
+            catch (ConsumeException ex) when (!ex.Error.IsFatal)
+            {
+                // A message that cannot be deserialized would otherwise crash the host and
+                // then be re-consumed on restart, forever. Capture its raw bytes to the DLQ
+                // when possible, then skip past it.
+                await SkipPoisonMessageAsync(ex, stoppingToken);
+                continue;
+            }
+
+            if (consumeResult == null || consumeResult.IsPartitionEOF)
+            {
+                continue;
+            }
+
+            if (consumeResult.Message?.Value == null)
+            {
+                // Tombstone (null value): nothing to process, but store the offset so the consumer advances.
+                LogTombstoneSkipped(logger, Topic, consumeResult.Partition.Value, consumeResult.Offset.Value);
+                consumer.StoreOffset(consumeResult);
+                continue;
+            }
+
+            await ProcessMessageWithRetryAsync(consumeResult, stoppingToken);
+
+            // Storing (not committing) is deliberate: the client's background auto-commit flushes
+            // stored offsets periodically, on rebalance, and on Close() — no per-message round trip.
+            consumer.StoreOffset(consumeResult);
         }
     }
 
