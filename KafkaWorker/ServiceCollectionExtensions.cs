@@ -84,6 +84,70 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
+    /// Registers a hosted Kafka consumer that processes messages in batches, deserializing them using
+    /// plain JSON (System.Text.Json) without Schema Registry.
+    /// </summary>
+    /// <typeparam name="TMessage">The message type to consume. Must be deserializable by <see cref="System.Text.Json.JsonSerializer"/>.</typeparam>
+    /// <typeparam name="THandler">The batch handler implementation type. Registered as a scoped service.</typeparam>
+    /// <param name="services">The service collection to add services to.</param>
+    /// <param name="configuration">The application configuration containing Kafka settings.</param>
+    /// <param name="configSection">The configuration section path for consumer settings. Defaults to <c>KafkaWorker:Consumer</c>.</param>
+    /// <param name="configureConsumer">Optional callback to configure the underlying Confluent <see cref="ConsumerConfig"/>.
+    /// <c>EnableAutoCommit</c> (<c>false</c>) and <c>EnableAutoOffsetStore</c> (<c>false</c>) are enforced by the
+    /// library and cannot be overridden: a batch consumer stores offsets only after a batch is handled and
+    /// commits them synchronously at the batch boundary.</param>
+    /// <param name="configureProducer">Optional callback to configure the underlying Confluent <see cref="ProducerConfig"/>
+    /// used for dead letter publishing.</param>
+    /// <returns>The service collection for chaining.</returns>
+    /// <remarks>
+    /// <para>
+    /// Batching amortizes the work the handler does downstream — one bulk insert instead of one insert
+    /// per message. It does not reduce broker round trips, because the client already pre-fetches
+    /// messages into a local queue. See <see cref="IBatchMessageHandler{TMessage}"/> for when it pays off.
+    /// </para>
+    /// <para>
+    /// Batch size and latency are controlled by <see cref="KafkaWorkerConfig.MaxBatchSize"/> and
+    /// <see cref="KafkaWorkerConfig.BatchLingerMs"/>. A batch that fails is re-processed one message at a
+    /// time, so retry and dead letter behaviour is identical to single-message mode.
+    /// </para>
+    /// </remarks>
+    public static IServiceCollection AddKafkaWorkerBatch<TMessage, THandler>(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        string configSection = KafkaWorkerConfig.Section,
+        Action<ConsumerConfig>? configureConsumer = null,
+        Action<ProducerConfig>? configureProducer = null)
+      where TMessage : class
+      where THandler : class, IBatchMessageHandler<TMessage>
+        => AddKafkaWorkerBatch<string, TMessage, THandler>(services, configuration, configSection, configureConsumer, configureProducer);
+
+    /// <inheritdoc cref="AddKafkaWorkerBatch{TMessage, THandler}"/>
+    /// <typeparam name="TKey">The message key type.</typeparam>
+    /// <typeparam name="TMessage">The message type to consume.</typeparam>
+    /// <typeparam name="THandler">The batch handler implementation type.</typeparam>
+    public static IServiceCollection AddKafkaWorkerBatch<TKey, TMessage, THandler>(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        string configSection = KafkaWorkerConfig.Section,
+        Action<ConsumerConfig>? configureConsumer = null,
+        Action<ProducerConfig>? configureProducer = null)
+      where TMessage : class
+      where THandler : class, IBatchMessageHandler<TMessage>
+    {
+        services.TryAddSingleton<IDeserializer<TMessage>>(sp => new JsonStringDeserializer<TMessage>());
+
+        RegisterProducer<TKey, TMessage>(services, configuration, (sp, b) =>
+        {
+            b.SetValueSerializer(new JsonStringSerializer<TMessage>());
+        }, configureProducer);
+
+        return RegisterHostedBatchConsumer<TKey, TMessage, THandler>(services, configuration, configSection, configureConsumer, (sp, b) =>
+        {
+            b.SetValueDeserializer(sp.GetRequiredService<IDeserializer<TMessage>>());
+        });
+    }
+
+    /// <summary>
     /// Registers a hosted dead letter queue consumer that periodically reprocesses failed messages.
     /// </summary>
     /// <typeparam name="TMessage">The message type to consume from the dead letter topic.</typeparam>
@@ -175,6 +239,46 @@ public static class ServiceCollectionExtensions
         where TMessage : class
         where THandler : class, IMessageHandler<TMessage>
     {
+        services.AddScoped<IMessageHandler<TMessage>, THandler>();
+        return RegisterHostedConsumerCore<TKey, TMessage>(
+            services, configuration, configSection, configureConsumer, deserializerConfig, batchEnabled: false);
+    }
+
+    /// <summary>
+    /// Core registration method for a batch consumer. Registers <typeparamref name="THandler"/> as a
+    /// scoped <see cref="IBatchMessageHandler{TMessage}"/>, plus an adapter that presents it as an
+    /// <see cref="IMessageHandler{TMessage}"/> so the consumer's per-message fallback and the DLQ
+    /// consumer's in-place reprocessing keep working unchanged.
+    /// </summary>
+    internal static IServiceCollection RegisterHostedBatchConsumer<TKey, TMessage, THandler>(
+        IServiceCollection services,
+        IConfiguration configuration,
+        string configSection,
+        Action<ConsumerConfig>? configureConsumer,
+        Action<IServiceProvider, ConsumerBuilder<TKey, TMessage>> deserializerConfig)
+        where TMessage : class
+        where THandler : class, IBatchMessageHandler<TMessage>
+    {
+        services.AddScoped<IBatchMessageHandler<TMessage>, THandler>();
+        services.AddScoped<IMessageHandler<TMessage>, BatchMessageHandlerAdapter<TMessage>>();
+        return RegisterHostedConsumerCore<TKey, TMessage>(
+            services, configuration, configSection, configureConsumer, deserializerConfig, batchEnabled: true);
+    }
+
+    /// <summary>
+    /// Registers the hosted consumer, its client configuration and supporting services. The message
+    /// handler itself is registered by the caller, which also decides whether the consumer runs in
+    /// batch mode.
+    /// </summary>
+    private static IServiceCollection RegisterHostedConsumerCore<TKey, TMessage>(
+        IServiceCollection services,
+        IConfiguration configuration,
+        string configSection,
+        Action<ConsumerConfig>? configureConsumer,
+        Action<IServiceProvider, ConsumerBuilder<TKey, TMessage>> deserializerConfig,
+        bool batchEnabled)
+        where TMessage : class
+    {
         if (services.Any(sd => sd.ServiceType == typeof(IHostedService) && sd.ImplementationType == typeof(Consumer<TKey, TMessage>)))
         {
             throw new InvalidOperationException(
@@ -182,7 +286,7 @@ public static class ServiceCollectionExtensions
                 "Use a distinct message type per consumer.");
         }
 
-        services.AddScoped<IMessageHandler<TMessage>, THandler>();
+        services.AddSingleton(new BatchConsumerOptions<TMessage>(batchEnabled));
         services.TryAddSingleton<KafkaWorkerMetrics>();
 
         services
@@ -205,13 +309,16 @@ public static class ServiceCollectionExtensions
             };
             ApplySecurityConfig(consumerConfig, kafkaConnection);
 
-            // Allow user overrides, then re-enforce library invariants: offsets are stored manually
-            // only after a message is handled, and the client's background auto-commit flushes stored
-            // offsets (every AutoCommitIntervalMs, on rebalance, and on close) — at-least-once without
-            // a synchronous per-message commit round trip.
+            // Allow user overrides, then re-enforce library invariants. Offsets are always stored
+            // manually, only after a message is handled. How they reach the broker depends on the
+            // mode: single-message consumers let the client's background auto-commit flush them
+            // (every AutoCommitIntervalMs, on rebalance, and on close), avoiding a synchronous round
+            // trip per message; batch consumers commit synchronously at each batch boundary, which
+            // costs one round trip per batch and bounds redelivery after a hard crash to a single
+            // batch. Either way the guarantee is at-least-once.
             configureConsumer?.Invoke(consumerConfig);
             consumerConfig.EnableAutoOffsetStore = false;
-            consumerConfig.EnableAutoCommit = true;
+            consumerConfig.EnableAutoCommit = !batchEnabled;
 
             var logger = sp.GetRequiredService<ILogger<Consumer<TKey, TMessage>>>();
             var builder = new ConsumerBuilder<TKey, TMessage>(consumerConfig)

@@ -39,6 +39,35 @@ public record KafkaWorkerConfig
     public int MaxRetries { get; init; } = RetryConstants.DefaultRetryCount;
 
     /// <summary>
+    /// The maximum number of messages handed to an <see cref="IBatchMessageHandler{TMessage}"/> in
+    /// a single call. Ignored unless the consumer was registered with <c>AddKafkaWorkerBatch</c>.
+    /// </summary>
+    /// <value>The default value is 100. Acceptable values are (1 - 10000).</value>
+    /// <remarks>
+    /// Keep <c>MaxBatchSize</c> multiplied by the per-message processing time comfortably inside the
+    /// client's <c>MaxPollIntervalMs</c> (default 5 minutes), or the group evicts the consumer
+    /// mid-batch. This value also bounds redelivery after a hard crash: batch consumers commit at
+    /// each batch boundary, so at most one batch is reprocessed.
+    /// </remarks>
+    [Range(1, 10_000)]
+    public int MaxBatchSize { get; init; } = 100;
+
+    /// <summary>
+    /// How long (in milliseconds) to keep accumulating messages into a batch after the first one
+    /// arrives, before handing whatever has been collected to the batch handler. Ignored unless the
+    /// consumer was registered with <c>AddKafkaWorkerBatch</c>.
+    /// </summary>
+    /// <value>The default value is 500. Acceptable values are (0 - 60000).</value>
+    /// <remarks>
+    /// This is a latency control, not a throughput one. Under load a batch fills from the client's
+    /// local pre-fetch queue almost instantly and never waits; on a quiet topic the consumer waits
+    /// this long and then processes the handful of messages it has. Set to 0 to never wait, taking
+    /// only what is already buffered locally.
+    /// </remarks>
+    [Range(0, 60_000)]
+    public int BatchLingerMs { get; init; } = 500;
+
+    /// <summary>
     /// The DLQ topic where failed messages are published after all retries are exhausted.
     /// Leave <c>null</c> to disable DLQ publishing (failed messages are logged and skipped).
     /// </summary>

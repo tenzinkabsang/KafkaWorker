@@ -26,6 +26,7 @@ internal sealed partial class Consumer<TKey, TMessage>(
     IServiceScopeFactory serviceScopeFactory,
     IOptionsMonitor<KafkaWorkerConfig> kafkaConfigMonitor,
     KafkaWorkerMetrics metrics,
+    BatchConsumerOptions<TMessage> batchOptions,
     ILogger<Consumer<TKey, TMessage>> logger) : BackgroundService where TMessage : class
 {
     private readonly KafkaWorkerConfig _kafkaConfig = kafkaConfigMonitor.Get(typeof(TMessage).FullName);
@@ -55,7 +56,14 @@ internal sealed partial class Consumer<TKey, TMessage>(
 
             LogSubscribed(logger, Topic);
 
-            await RunSingleMessageLoopAsync(stoppingToken);
+            if (batchOptions.IsEnabled)
+            {
+                await RunBatchLoopAsync(stoppingToken);
+            }
+            else
+            {
+                await RunSingleMessageLoopAsync(stoppingToken);
+            }
 
             LogFinishedExecuting(logger, Topic);
         }

@@ -17,6 +17,7 @@ public class ConsumerTests : IDisposable
     private readonly IProducer<string, TestMessage> _deadLetterProducer;
     private readonly IProducer<byte[], byte[]> _rawDeadLetterProducer;
     private readonly IMessageHandler<TestMessage> _messageHandler;
+    private readonly IBatchMessageHandler<TestMessage> _batchHandler;
     private readonly ITerminalFailureSink<TestMessage> _terminalSink;
     private readonly ILogger<Consumer<string, TestMessage>> _logger;
     private readonly KafkaWorkerMetrics _metrics;
@@ -29,6 +30,7 @@ public class ConsumerTests : IDisposable
         _rawDeadLetterProducer = Substitute.For<IProducer<byte[], byte[]>>();
         _terminalSink = Substitute.For<ITerminalFailureSink<TestMessage>>();
         _messageHandler = Substitute.For<IMessageHandler<TestMessage>>();
+        _batchHandler = Substitute.For<IBatchMessageHandler<TestMessage>>();
         _logger = Substitute.For<ILogger<Consumer<string, TestMessage>>>();
         _logger.IsEnabled(Arg.Any<LogLevel>()).Returns(true);
         _metrics = new KafkaWorkerMetrics();
@@ -56,14 +58,19 @@ public class ConsumerTests : IDisposable
         string topic = TestTopic,
         string? deadLetterTopic = TestDlqTopic,
         int maxRetries = 0,
-        bool registerTerminalSink = true)
+        bool registerTerminalSink = true,
+        bool batchMode = false,
+        int maxBatchSize = 100,
+        int batchLingerMs = 0)
     {
         var config = new KafkaWorkerConfig
         {
             GroupId = "test-group",
             Topic = topic,
             DeadLetterTopic = deadLetterTopic,
-            MaxRetries = maxRetries
+            MaxRetries = maxRetries,
+            MaxBatchSize = maxBatchSize,
+            BatchLingerMs = batchLingerMs
         };
 
         var optionsMonitor = Substitute.For<IOptionsMonitor<KafkaWorkerConfig>>();
@@ -71,6 +78,7 @@ public class ConsumerTests : IDisposable
 
         var serviceProvider = Substitute.For<IServiceProvider>();
         serviceProvider.GetService(typeof(IMessageHandler<TestMessage>)).Returns(_messageHandler);
+        serviceProvider.GetService(typeof(IBatchMessageHandler<TestMessage>)).Returns(_batchHandler);
         if (registerTerminalSink)
         {
             serviceProvider.GetService(typeof(ITerminalFailureSink<TestMessage>)).Returns(_terminalSink);
@@ -87,6 +95,7 @@ public class ConsumerTests : IDisposable
             scopeFactory,
             optionsMonitor,
             _metrics,
+            new BatchConsumerOptions<TestMessage>(batchMode),
             _logger);
     }
 
