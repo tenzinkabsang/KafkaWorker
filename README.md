@@ -32,6 +32,7 @@ dotnet add package KafkaWorker.JsonSchema     # for JSON + Schema Registry
 
 - **Simple abstraction** — Implement `IMessageHandler<TMessage>` to handle messages
 - **Scoped DI per message** — A new DI scope per message, so scoped dependencies like EF Core `DbContext` work naturally
+- **Batch processing** *(optional)* — Implement `IBatchMessageHandler<TMessage>` and register with `AddKafkaWorkerBatch` to handle messages in groups, turning one database round trip per message into one per batch. A failed batch falls back to per-message processing, so a single bad message is still dead lettered on its own
 - **Built-in retry with exponential backoff** *(optional)* — Configurable retry attempts (0–5) with jitter. Set `MaxRetries` to `0` to disable
 - **Dead letter queue support** *(optional)* — Failed messages are sent to a DLQ. Leave `DeadLetterTopic` null to disable
 - **Periodic DLQ reprocessing** *(optional)* — Register `AddKafkaWorkerDeadLetter` to automatically retry failed messages on a schedule. Messages are reprocessed **in place** (via your handler) so they never return to the original topic
@@ -206,6 +207,8 @@ Configure under `KafkaWorker:Consumer` (or a custom section — see [Multiple Co
 | `DeadLetterMaxReprocessAttempts` | `int` | `3` | Max times the DLQ consumer retries a message (1–5). Only applies when `DeadLetterTopic` is set |
 | `DeadLetterProcessingIntervalMinutes` | `int` | `60` | Minutes between DLQ reprocessing batches. Only applies when `DeadLetterTopic` is set |
 | `DeadLetterStartFrom` | `DateTimeOffset?` | `null` | UTC timestamp from which the DLQ consumer should start processing when no committed offsets exist. Useful when enabling DLQ after the system has been running. E.g. `"2025-06-01T00:00:00Z"` |
+| `MaxBatchSize` | `int` | `100` | Messages per batch handler call. Only applies to consumers registered with `AddKafkaWorkerBatch`. Range: 1–10000 |
+| `BatchLingerMs` | `int` | `500` | How long a batch keeps accumulating after its first message. Only applies to consumers registered with `AddKafkaWorkerBatch`. Range: 0–60000 |
 
 ### Connection Settings
 
@@ -382,6 +385,9 @@ The library emits [OpenTelemetry-compatible metrics](https://learn.microsoft.com
 | `kafkaworker.messages.dlq_published` | Counter | `topic`, `dlq_topic`, `reason` (`processing_failed`, `invalid`, `reprocess_failed`, `deserialization_failed`) | Messages published to DLQ |
 | `kafkaworker.dlq.messages_reprocessed` | Counter | `dlq_topic` | Messages reprocessed in place from DLQ |
 | `kafkaworker.dlq.messages_skipped` | Counter | `dlq_topic`, `reason` (`invalid`, `max_attempts`, `deserialization_failed`) | Messages skipped during DLQ reprocessing |
+| `kafkaworker.batch.size` | Histogram | `topic` | Messages handed to a batch handler in a single call |
+| `kafkaworker.batch.processing_duration` | Histogram (ms) | `topic` | Duration of a batch handler call |
+| `kafkaworker.batch.fallbacks` | Counter | `topic` | Batches that failed and were re-processed one message at a time |
 
 ### Subscribing to Metrics
 

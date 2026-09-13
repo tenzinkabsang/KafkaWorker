@@ -7,8 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Batch processing.** Implement `IBatchMessageHandler<TMessage>` and register with
+  `AddKafkaWorkerBatch` (or `AddKafkaWorkerAvroBatch` / `AddKafkaWorkerProtobufBatch` /
+  `AddKafkaWorkerRegistryJsonBatch`) to receive messages in groups instead of one at a time. A new DI
+  scope is created per batch, so a scoped `DbContext` is shared across the batch and a handler that
+  wrote one row per message can now write them all in a single round trip. Batch size and latency are
+  controlled by the new `MaxBatchSize` (default 100) and `BatchLingerMs` (default 500) settings.
+
+  Batching is a *downstream* optimization, not a Kafka one: the client already pre-fetches messages
+  into a local in-memory queue, so consuming is already effectively free and draining a batch issues
+  no extra broker round trips. It pays off only when the batch collapses into one operation — a bulk
+  insert, one transaction, a batch API call.
+
+  **Failure handling is unchanged from single-message mode.** A batch that throws identifies no
+  particular message, so every message in it is re-processed individually through the existing
+  per-message path: retries, `InvalidMessageException` routing, DLQ headers, `ITerminalFailureSink`
+  and per-message metrics all behave exactly as before, and one bad message is still dead lettered on
+  its own rather than dragging its batch with it. Because of that fallback, **a batch handler must be
+  idempotent** — messages that already succeeded inside a failed batch run a second time.
+
+  New metrics: `kafkaworker.batch.size`, `kafkaworker.batch.processing_duration`, and
+  `kafkaworker.batch.fallbacks`. `AddKafkaWorkerDeadLetter` works unchanged with a batch consumer —
+  DLQ reprocessing is inherently per-message, so it invokes the batch handler with single-message
+  batches.
+
 ### Changed
 
+- **Batch consumers commit offsets synchronously at each batch boundary** rather than relying on the
+  client's background auto-commit (`EnableAutoCommit` is forced to `false` for them; single-message
+  consumers are unaffected and keep background auto-commit). One round trip per batch is roughly a
+  hundredth of the per-message cost that made background auto-commit worthwhile in 2.4.0, and it
+  bounds redelivery after a hard crash to a single batch — a number you set via `MaxBatchSize` —
+  instead of however much throughput fit inside `AutoCommitIntervalMs`. This matters precisely
+  because batching raises throughput: the same 5-second window would otherwise hold far more work.
 - Updated dependencies: `Confluent.Kafka` and the three `Confluent.SchemaRegistry.Serdes.*`
   add-ons to 2.15.1, and the net10.0 target to `Microsoft.Extensions.*` 10.0.12 (servicing
   patches; the net8.0 target stays on 8.0.x).

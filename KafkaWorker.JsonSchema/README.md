@@ -63,6 +63,19 @@ builder.Services.AddKafkaWorkerRegistryJson<OrderMessage, OrderMessageHandler>(
     });
 ```
 
+## Batch Processing
+
+Use `AddKafkaWorkerRegistryJsonBatch` with an `IBatchMessageHandler<TMessage>` to process messages in groups — one bulk
+database write per batch instead of one per message. A failed batch falls back to per-message
+processing, so retry and DLQ behaviour is identical to single-message mode.
+
+```csharp
+builder.Services.AddKafkaWorkerRegistryJsonBatch<OrderMessage, OrderBatchHandler>(builder.Configuration);
+```
+
+See the [batch processing guide](https://tenzinkabsang.github.io/KafkaWorker/batch-processing) for
+when batching pays off and how offsets are committed.
+
 ## Custom Key Type
 
 ```csharp

@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Multiple Consumers
-nav_order: 6
+nav_order: 7
 ---
 
 # Multiple Consumers

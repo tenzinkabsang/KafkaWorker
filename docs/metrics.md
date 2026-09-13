@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Metrics
-nav_order: 7
+nav_order: 8
 ---
 
 # Metrics
@@ -27,6 +27,9 @@ The library emits [OpenTelemetry-compatible metrics](https://learn.microsoft.com
 | `kafkaworker.messages.dlq_published` | Counter | `topic`, `dlq_topic`, `reason` | Messages published to the dead letter queue |
 | `kafkaworker.dlq.messages_reprocessed` | Counter | `dlq_topic` | Messages successfully reprocessed in place from the DLQ |
 | `kafkaworker.dlq.messages_skipped` | Counter | `dlq_topic`, `reason` | Messages skipped during DLQ reprocessing |
+| `kafkaworker.batch.size` | Histogram | `topic` | Messages handed to a batch handler in a single call |
+| `kafkaworker.batch.processing_duration` | Histogram (ms) | `topic` | Duration of a batch handler call |
+| `kafkaworker.batch.fallbacks` | Counter | `topic` | Batches that failed and were re-processed one message at a time |
 
 ### Tag Values
 

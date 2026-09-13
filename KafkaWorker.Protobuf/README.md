@@ -63,6 +63,19 @@ builder.Services.AddKafkaWorkerProtobuf<OrderMessage, OrderMessageHandler>(
     });
 ```
 
+## Batch Processing
+
+Use `AddKafkaWorkerProtobufBatch` with an `IBatchMessageHandler<TMessage>` to process messages in groups — one bulk
+database write per batch instead of one per message. A failed batch falls back to per-message
+processing, so retry and DLQ behaviour is identical to single-message mode.
+
+```csharp
+builder.Services.AddKafkaWorkerProtobufBatch<OrderMessage, OrderBatchHandler>(builder.Configuration);
+```
+
+See the [batch processing guide](https://tenzinkabsang.github.io/KafkaWorker/batch-processing) for
+when batching pays off and how offsets are committed.
+
 ## Custom Key Type
 
 ```csharp
