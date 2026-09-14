@@ -178,7 +178,7 @@ Everything else — the loop, offsets, retries, DLQ publishing *and* reprocessin
 | Manual offset management (`StoreOffset` + auto-commit wiring) | You write it | Built in |
 | Retry with exponential backoff + jitter | You write it | Built in (`MaxRetries`, Polly) |
 | Dead letter publishing with tracking headers | You write it | Built in |
-| **Periodic DLQ reprocessing** (in place, attempt-bounded, loop detection) | You write a second service | Built in (`AddKafkaWorkerDeadLetter`) |
+| **Periodic DLQ reprocessing** (in place, attempt-bounded, never re-reads its own re-enqueues) | You write a second service | Built in (`AddKafkaWorkerDeadLetter`) |
 | On-demand DLQ reprocessing | You write it | Built in (`IDlqReprocessTrigger<T>`) |
 | Poison messages (crash-loop prevention) | You write it | Built in |
 | Permanent vs transient failure distinction | You write it | `InvalidMessageException` |

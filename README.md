@@ -423,7 +423,7 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 - `StoreOffset()` after every message (success, DLQ publish, DLQ publish failure, tombstone, or deserialization failure), flushed by the client's background auto-commit
 - Retry with exponential backoff and jitter (Polly)
 - Publishing to DLQ with tracking headers (`original-topic`, `error-message`, `invalid-message`, `batch-id`, `reprocessed-attempt`, `deserialization-failed`)
-- DLQ reprocessing on a timer with loop detection
+- DLQ reprocessing on a timer, bounded so a sweep never re-reads its own re-enqueues
 - Configuration validation on startup
 
 ## Requirements

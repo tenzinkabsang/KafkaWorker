@@ -130,7 +130,7 @@ You write the `IMessageHandler<TMessage>` — the library handles everything els
 - `StoreOffset()` after every message, flushed by the client's background auto-commit
 - Retry with exponential backoff and jitter (Polly)
 - Publishing to DLQ with tracking headers
-- DLQ reprocessing on a timer with loop detection
+- DLQ reprocessing on a timer, bounded so a sweep never re-reads its own re-enqueues
 - Poison-message capture (raw bytes to the DLQ) and tombstone skipping
 - Configuration validation on startup
 - Scoped DI per message

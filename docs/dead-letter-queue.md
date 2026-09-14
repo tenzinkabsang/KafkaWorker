@@ -38,7 +38,7 @@ When a message is sent to the DLQ, the library attaches tracking headers:
 | `original-topic` | The topic the message was originally consumed from (diagnostic) |
 | `error-message` | The exception message from the failed processing attempt |
 | `invalid-message` | Set to `"true"` if the message was rejected via `InvalidMessageException` |
-| `batch-id` | UUID identifying the DLQ reprocessing batch (used for loop detection) |
+| `batch-id` | UUID identifying the DLQ reprocessing sweep that last re-enqueued the message (diagnostic) |
 | `reprocessed-attempt` | Counter tracking how many times this message has been reprocessed from the DLQ |
 | `deserialization-failed` | Set to `"true"` on raw-bytes records captured when a message failed deserialization; these are never auto-reprocessed |
 
@@ -163,16 +163,6 @@ A message is skipped (not reprocessed) if:
 
 Tombstones and undeserializable records never end the batch — they are committed past so the DLQ consumer always makes progress.
 
-### Loop Detection
-
-Each reprocessing batch gets a unique `batch-id`. When the consumer encounters a message with the current batch's ID, it knows it has looped back to messages already processed in this batch and stops. This bounds reprocessing when a re-enqueued message is read again within the same tick.
-
-### Error Handling
-
-Unlike the main consumer, the DLQ consumer **preserves messages on failure**. If re-enqueuing a failed message back to the DLQ fails, it stops the batch without committing. The message will be retried on the next scheduled run.
-
-A consume error that carries no record offset (e.g. a transient broker error) also ends the batch without committing; the batch is retried on the next tick.
-
 ### How a sweep knows when to stop
 
 The DLQ consumer appends to the very topic it is draining, so the end of the log moves as it works. Each sweep therefore snapshots the **high watermark** of every assigned partition before handling a single message, and treats that as its finish line.
@@ -182,6 +172,12 @@ Anything at or beyond that offset was appended *during* the sweep — a re-enque
 The `batch-id` header is still stamped on every re-enqueue, so you can see which sweep last touched a message, but it no longer controls where a sweep ends.
 
 Partition count needs no special consideration: each partition gets its own finish line and is paused as it is reached, so the sweep ends once they are all drained.
+
+### Error Handling
+
+Unlike the main consumer, the DLQ consumer **preserves messages on failure**. If re-enqueuing a failed message back to the DLQ fails, it stops the batch without committing. The message will be retried on the next scheduled run.
+
+A consume error that carries no record offset (e.g. a transient broker error) also ends the batch without committing; the batch is retried on the next tick.
 
 {: .important }
 > **Size DLQ retention generously** — the DLQ topic doubles as your failure archive: terminal messages and captured poison records stay in it *only* until the topic's retention expires. Set a long retention on DLQ topics, or make it unlimited:
@@ -288,7 +284,7 @@ Terminal messages sit in the DLQ topic behind the committed offset. Browse the t
 
 ### Redrive
 
-After fixing the root cause, republish the message **value** (and key) back to the DLQ topic **without** the `reprocessed-attempt`, `invalid-message`, and `batch-id` headers — the DLQ consumer then treats it as a fresh failure and reprocesses it on the next tick (or immediately via the [on-demand trigger](#on-demand-reprocessing)). Example with `kcat`:
+After fixing the root cause, republish the message **value** (and key) back to the DLQ topic **without** the `reprocessed-attempt` and `invalid-message` headers — the DLQ consumer then treats it as a fresh failure (`batch-id` is diagnostic only, but worth dropping too so the breadcrumb is not misleading) and reprocesses it on the next tick (or immediately via the [on-demand trigger](#on-demand-reprocessing)). Example with `kcat`:
 
 ```bash
 # 1. Find the terminal message (note its partition/offset, inspect headers)
