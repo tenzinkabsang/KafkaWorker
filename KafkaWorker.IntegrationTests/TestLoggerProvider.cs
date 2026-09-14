@@ -17,6 +17,9 @@ internal sealed class TestLoggerProvider(ITestOutputHelper testOutputHelper) : I
     public bool HasLogged(string expectedMessage)
         => _entries.Any(e => e.Message.Contains(expectedMessage, StringComparison.OrdinalIgnoreCase));
 
+    public int CountLogged(string expectedMessage)
+        => _entries.Count(e => e.Message.Contains(expectedMessage, StringComparison.OrdinalIgnoreCase));
+
     public async Task WaitForLogAsync(string expectedMessage, Task hostTask, TimeSpan? timeout = null)
     {
         var deadline = DateTime.UtcNow.Add(timeout ?? WaitTime);

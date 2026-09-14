@@ -173,8 +173,15 @@ Unlike the main consumer, the DLQ consumer **preserves messages on failure**. If
 
 A consume error that carries no record offset (e.g. a transient broker error) also ends the batch without committing; the batch is retried on the next tick.
 
-{: .important }
-> **Single partition DLQ** — For optimal performance, configure the dead letter topic with a single partition.
+### How a sweep knows when to stop
+
+The DLQ consumer appends to the very topic it is draining, so the end of the log moves as it works. Each sweep therefore snapshots the **high watermark** of every assigned partition before handling a single message, and treats that as its finish line.
+
+Anything at or beyond that offset was appended *during* the sweep — a re-enqueued message — and is deliberately left uncommitted for the next tick. That is what stops a message from burning through all of its `DeadLetterMaxReprocessAttempts` in one pass.
+
+The `batch-id` header is still stamped on every re-enqueue, so you can see which sweep last touched a message, but it no longer controls where a sweep ends.
+
+Partition count needs no special consideration: each partition gets its own finish line and is paused as it is reached, so the sweep ends once they are all drained.
 
 {: .important }
 > **Size DLQ retention generously** — the DLQ topic doubles as your failure archive: terminal messages and captured poison records stay in it *only* until the topic's retention expires. Set a long retention on DLQ topics, or make it unlimited:

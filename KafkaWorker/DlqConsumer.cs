@@ -20,7 +20,14 @@ namespace KafkaWorker;
 /// future tick, so failed messages never reappear on the original topic.
 /// </para>
 /// <para>
-/// For optimal performance, the dead letter topic should be configured with a single partition.
+/// Because the consumer appends to the very topic it is draining, each sweep snapshots the end of the
+/// log per partition before handling anything and stops there. Re-enqueues made during a sweep land
+/// beyond that finish line and are left for the next tick, which is what keeps a message from
+/// exhausting its reprocess attempts in a single pass.
+/// </para>
+/// <para>
+/// Partition count needs no special consideration: each partition has its own finish line and is
+/// paused as it is reached, so the sweep ends once they are all drained.
 /// </para>
 /// </remarks>
 /// <typeparam name="TKey">The type of message key being consumed.</typeparam>
@@ -42,6 +49,15 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     private string? DeadLetterTopic => _kafkaConfig.DeadLetterTopic;
 
     private static readonly ResiliencePipeline _produceResiliencePipeline = ProduceResiliencePipeline.Instance;
+
+    /// <summary>How long the per-sweep watermark query may block per partition.</summary>
+    private static readonly TimeSpan WatermarkQueryTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// How long each poll waits for a record before the sweep treats the dead letter topic as quiet
+    /// and ends the tick. This is the fallback boundary: a sweep normally ends at the finish line.
+    /// </summary>
+    private static readonly TimeSpan ConsumePollTimeout = TimeSpan.FromSeconds(5);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -91,9 +107,10 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     }
 
     /// <summary>
-    /// This method subscribes to the dead letter topic and processes new messages, committing
-    /// offsets after each message is handled. Processing stops when the cancellation token is triggered or when there
-    /// are no more messages
+    /// This method subscribes to the dead letter topic and processes new messages, committing offsets
+    /// after each message is handled. The sweep ends when every assigned partition reaches the finish
+    /// line snapshotted at the start, when the topic goes quiet, or when the cancellation token is
+    /// triggered.
     /// </summary>
     internal async Task ProcessDeadLetterQueueBatchAsync(string batchId, CancellationToken stoppingToken)
     {
@@ -104,12 +121,18 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
             consumer.Subscribe(DeadLetterTopic);
             LogSubscribedToDlq(logger, DeadLetterTopic);
 
+            // The end of the log for each assigned partition as it stood when this sweep began.
+            // Captured once, lazily, after the first record proves the assignment is settled — and
+            // always before any message is handled, so this sweep's own re-enqueues land beyond it.
+            Dictionary<TopicPartition, long>? finishLine = null;
+            var paused = new HashSet<TopicPartition>();
+
             while (!stoppingToken.IsCancellationRequested)
             {
                 ConsumeResult<TKey, TMessage> consumeResult;
                 try
                 {
-                    consumeResult = consumer.Consume(TimeSpan.FromSeconds(5));
+                    consumeResult = consumer.Consume(ConsumePollTimeout);
                 }
                 catch (ConsumeException ex) when (!ex.Error.IsFatal)
                 {
@@ -144,9 +167,43 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                     continue;
                 }
 
-                if (consumeResult == null || consumeResult.IsPartitionEOF)
+                if (consumeResult == null)
                 {
                     break;
+                }
+
+                if (consumeResult.IsPartitionEOF)
+                {
+                    // An informational marker rather than a record: nothing to hand the handler and
+                    // no offset to commit. It is never emitted today (the DLQ consumer does not set
+                    // EnablePartitionEof) and terminating the sweep on it would be wrong anyway,
+                    // since EOF tracks the *current* end of the log — which includes this sweep's
+                    // own re-enqueues. Bounding the sweep is the finish line's job.
+                    continue;
+                }
+
+                finishLine ??= SnapshotFinishLine(consumer);
+                if (finishLine.Count == 0)
+                {
+                    // Nothing to bound the sweep against. Draining unbounded would risk consuming
+                    // this sweep's own re-enqueues, so leave the work for the next tick.
+                    LogNoFinishLine(logger, DeadLetterTopic);
+                    break;
+                }
+
+                // Checked before the tombstone branch: a record at or beyond the finish line was
+                // appended during this sweep and must not be committed, tombstone or not.
+                if (TryFinishPartition(consumer, consumeResult, finishLine, paused))
+                {
+                    // Membership, not a count: a partition assigned mid-sweep by a rebalance is
+                    // paused too but is absent from the snapshot, so counting would let it stand in
+                    // for a snapshotted partition that has not finished yet.
+                    if (finishLine.Keys.All(paused.Contains))
+                    {
+                        break;
+                    }
+
+                    continue;
                 }
 
                 if (consumeResult.Message?.Value == null)
@@ -157,14 +214,6 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                     consumer.StoreOffset(consumeResult);
                     consumer.Commit();
                     continue;
-                }
-
-                var messageBatchId = consumeResult.Message.Headers.GetBatchId();
-                // If the message's batch ID matches the current batch ID, we stop processing
-                // because it indicates we've looped back to already processed messages for this batch.
-                if (!string.IsNullOrEmpty(messageBatchId) && messageBatchId == batchId)
-                {
-                    break;
                 }
 
                 var success = await HandleMessageAsync(consumeResult, batchId, stoppingToken);
@@ -193,6 +242,80 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
         {
             consumer.Close();
         }
+    }
+
+    /// <summary>
+    /// Captures the end of the log for every assigned partition, fixing the finish line for this
+    /// sweep before any message is reprocessed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The DLQ consumer appends to the very topic it is draining, so the end of the log runs away
+    /// from it as it works. Snapshotting up front means this sweep's own re-enqueues land beyond the
+    /// finish line and are structurally unreachable until the next tick — the job the
+    /// <c>batch-id</c> header used to do by tagging and recognising our own output.
+    /// </para>
+    /// <para>
+    /// Queried rather than read from the client's cache: <c>GetWatermarkOffsets</c> only has a value
+    /// for partitions that have already delivered a message set, so a partition not yet fetched
+    /// would silently get no finish line and would then consume its own re-enqueues. One blocking
+    /// call per partition is irrelevant on a sweep that runs on an hourly interval by default.
+    /// </para>
+    /// <para>
+    /// Taken exactly once per sweep. Re-reading it later would pick up messages appended in the
+    /// meantime and reintroduce the moving finish line this exists to escape.
+    /// </para>
+    /// </remarks>
+    private Dictionary<TopicPartition, long> SnapshotFinishLine(IConsumer<TKey, TMessage> consumer)
+    {
+        var finishLine = new Dictionary<TopicPartition, long>();
+        foreach (var topicPartition in consumer.Assignment)
+        {
+            var watermarks = consumer.QueryWatermarkOffsets(topicPartition, WatermarkQueryTimeout);
+            finishLine[topicPartition] = watermarks.High.Value;
+            LogFinishLine(logger, DeadLetterTopic, topicPartition.Partition.Value, watermarks.High.Value);
+        }
+
+        return finishLine;
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when the record lies at or beyond its partition's finish line, meaning the
+    /// partition is done for this sweep. The partition is paused on the first such record so the
+    /// remaining partitions keep draining, and recorded in <paramref name="paused"/> so it is not
+    /// paused again.
+    /// </summary>
+    /// <remarks>
+    /// Pausing rather than ending the whole sweep is what makes a multi-partition dead letter topic
+    /// safe: stopping everything the moment one partition is exhausted abandons unprocessed messages
+    /// on the others. The record itself is deliberately left uncommitted so the next tick picks it up.
+    /// </remarks>
+    private bool TryFinishPartition(
+        IConsumer<TKey, TMessage> consumer,
+        ConsumeResult<TKey, TMessage> consumeResult,
+        Dictionary<TopicPartition, long> finishLine,
+        HashSet<TopicPartition> paused)
+    {
+        var topicPartition = consumeResult.TopicPartition;
+
+        // A partition absent from the snapshot was assigned mid-sweep by a rebalance and has no
+        // finish line of its own; leave it entirely to the next tick rather than draining it
+        // unbounded, which could reach this sweep's re-enqueues.
+        var reachedEnd = !finishLine.TryGetValue(topicPartition, out var stopAt)
+            || consumeResult.Offset.Value >= stopAt;
+
+        if (!reachedEnd)
+        {
+            return false;
+        }
+
+        if (paused.Add(topicPartition))
+        {
+            consumer.Pause(new[] { topicPartition });
+            LogPartitionFinished(logger, DeadLetterTopic, topicPartition.Partition.Value, consumeResult.Offset.Value);
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -301,8 +424,9 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
     /// <summary>
     /// Re-enqueues a message that failed in-place reprocessing back to the dead letter topic with an
-    /// incremented reprocess-attempt count and the current batch id (so the current batch's loop
-    /// detection stops before reprocessing it again). Returns false if the produce fails so the batch
+    /// incremented reprocess-attempt count and the current batch id. The re-enqueued record lands
+    /// beyond this sweep's finish line, so it is naturally left for a future tick; the batch id is
+    /// carried purely as a diagnostic breadcrumb. Returns false if the produce fails so the batch
     /// stops without committing.
     /// </summary>
     private async Task<bool> ReEnqueueToDeadLetterAsync(
@@ -407,6 +531,15 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
     [LoggerMessage(EventId = 222, Level = LogLevel.Error, Message = "Terminal failure sink threw; the terminal failure record was not persisted. Key: {MessageKey}")]
     private static partial void LogTerminalFailureSinkFailed(ILogger logger, Exception ex, TKey messageKey);
+
+    [LoggerMessage(EventId = 224, Level = LogLevel.Debug, Message = "DLQ sweep finish line for {DeadLetterTopic} partition {Partition}: offset {HighWatermark}")]
+    private static partial void LogFinishLine(ILogger logger, string? deadLetterTopic, int partition, long highWatermark);
+
+    [LoggerMessage(EventId = 225, Level = LogLevel.Debug, Message = "Reached the finish line for {DeadLetterTopic} partition {Partition} at offset {Offset}; pausing it for the rest of this sweep")]
+    private static partial void LogPartitionFinished(ILogger logger, string? deadLetterTopic, int partition, long offset);
+
+    [LoggerMessage(EventId = 226, Level = LogLevel.Warning, Message = "No partitions assigned when starting the sweep of {DeadLetterTopic}; skipping this tick")]
+    private static partial void LogNoFinishLine(ILogger logger, string? deadLetterTopic);
 
     [LoggerMessage(EventId = 223, Level = LogLevel.Debug, Message = "Skipping captured raw poison record (awaiting manual redrive). DLQ Topic: {DeadLetterTopic}, Partition: {Partition}, Offset: {Offset}")]
     private static partial void LogCapturedPoisonSkipped(ILogger logger, string? deadLetterTopic, int partition, long offset);

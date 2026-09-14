@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The DLQ sweep now terminates on a high-watermark snapshot instead of the `batch-id` header.**
+  Because the DLQ consumer appends to the very topic it is draining, the end of the log runs away
+  from it as it works; `batch-id` handled that by tagging each re-enqueue so the sweep could
+  recognise its own output coming back around. Each sweep now queries the high watermark of every
+  assigned partition once, before handling anything, and treats it as a fixed finish line — records
+  at or beyond it were appended during the sweep and are left uncommitted for the next tick.
+
+  The practical gains: a sweep ends deterministically when it reaches the finish line instead of
+  idling out the 5-second consume timeout, and **multi-partition dead letter topics are now handled
+  correctly**. Previously a `batch-id` match broke out of the entire sweep, stranding unprocessed
+  messages on every other partition; each partition now carries its own finish line and is paused as
+  it is reached, so the sweep ends only once all of them are drained. The long-standing advice to give the dead letter
+  topic a single partition has been dropped from the docs along with it — it was compensating
+  for this bug rather than a performance recommendation, and it left every extra app instance's
+  DLQ consumer idle.
+
+  `batch-id` is still stamped on every re-enqueue as a diagnostic breadcrumb — it just no longer
+  drives control flow. `reprocessed-attempt`, `invalid-message` and `deserialization-failed` are
+  unchanged.
+
+- A partition assigned to the DLQ consumer mid-sweep by a rebalance no longer counts towards the
+  sweep's completion check. It has no finish line of its own and is deliberately left to the next
+  tick, but it was being tallied alongside the snapshotted partitions, so it could stand in for one
+  that had not finished and end the sweep early. Nothing was lost — the stranded partition was
+  picked up on the following tick — but a sweep could silently do less than it should.
+
+- A DLQ record flagged `IsPartitionEOF` is now skipped rather than ending the sweep. The DLQ consumer
+  has never set `EnablePartitionEof`, so this branch was inert; had it ever been enabled, ending on
+  EOF would have been wrong, since EOF tracks the *current* end of the log and so includes the
+  sweep's own re-enqueues.
+
 ## [2.5.0] - 2026-09-13
 
 ### Added

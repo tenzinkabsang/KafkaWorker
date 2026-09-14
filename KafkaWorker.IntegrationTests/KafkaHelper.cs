@@ -39,9 +39,33 @@ public static class KafkaHelper
     /// <summary>
     /// Deletes and recreates a topic with no messages (useful for DLQ topics).
     /// </summary>
-    public static async Task InitializeEmptyTopicAsync(string topic)
+    public static async Task InitializeEmptyTopicAsync(string topic, int partitions = 1)
     {
-        await DeleteAndRecreateTopicAsync(topic);
+        await DeleteAndRecreateTopicAsync(topic, partitions);
+    }
+
+    /// <summary>
+    /// Returns how many records each partition of a topic holds, so a test can prove its messages
+    /// actually spread across partitions rather than piling onto one.
+    /// </summary>
+    public static IReadOnlyList<long> GetPartitionMessageCounts(string topic, int partitions)
+    {
+        using var consumer = new ConsumerBuilder<string, string>(new ConsumerConfig
+        {
+            BootstrapServers = BootstrapServers,
+            GroupId = $"watermark-probe-{Guid.NewGuid():N}"
+        }).Build();
+
+        var counts = new List<long>();
+        for (var partition = 0; partition < partitions; partition++)
+        {
+            var watermarks = consumer.QueryWatermarkOffsets(
+                new TopicPartition(topic, new Partition(partition)), TimeSpan.FromSeconds(10));
+            counts.Add(watermarks.High.Value - watermarks.Low.Value);
+        }
+
+        consumer.Close();
+        return counts;
     }
 
     /// <summary>
@@ -82,7 +106,7 @@ public static class KafkaHelper
     /// <summary>
     /// Deletes and recreates a topic, retrying creation until Kafka finishes the deletion.
     /// </summary>
-    private static async Task DeleteAndRecreateTopicAsync(string topic)
+    private static async Task DeleteAndRecreateTopicAsync(string topic, int partitions = 1)
     {
         using var adminClient = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = BootstrapServers }).Build();
 
@@ -102,7 +126,7 @@ public static class KafkaHelper
         {
             try
             {
-                await adminClient.CreateTopicsAsync([new TopicSpecification { Name = topic, NumPartitions = 1, ReplicationFactor = 1 }]);
+                await adminClient.CreateTopicsAsync([new TopicSpecification { Name = topic, NumPartitions = partitions, ReplicationFactor = 1 }]);
                 created = true;
             }
             catch (CreateTopicsException ex)
