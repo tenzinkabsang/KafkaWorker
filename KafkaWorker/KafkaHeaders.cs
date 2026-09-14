@@ -22,8 +22,8 @@ internal static class KafkaHeaders
     public const string InvalidMessage = "invalid-message";
 
     /// <summary>
-    /// Tracks which DLQ processing batch this message belongs to.
-    /// Used to detect when we've looped back to already-processed messages.
+    /// Tracks which DLQ processing sweep re-enqueued this message. Diagnostic only — a sweep is
+    /// bounded by the per-partition finish line it snapshots at the start, not by this header.
     /// </summary>
     public const string BatchId = "batch-id";
 

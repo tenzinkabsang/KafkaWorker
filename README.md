@@ -415,7 +415,6 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 - **DLQ is best-effort from the main consumer** — The main consumer attempts to publish failed messages to the DLQ with Polly retry, but if all attempts fail it logs at `Critical`, commits the offset, and moves on. Processing incoming records takes priority over guaranteeing every failed message reaches the DLQ.
 - **DLQ consumer preserves messages on failure** — Unlike the main consumer, if the DLQ consumer fails to re-enqueue a message back to the DLQ, it stops the batch without committing. The message will be retried on the next scheduled run.
 - **In-place reprocessing requires a handler** — The DLQ consumer invokes `IMessageHandler<TMessage>` directly, so register the consumer (`AddKafkaWorker`) before `AddKafkaWorkerDeadLetter`. Registration throws at startup if the handler is missing.
-- **Single partition DLQ** — For optimal performance, configure the dead letter topic with a single partition.
 - **Backpressure** — The consume loop processes messages sequentially, so it naturally applies backpressure — Kafka won't outpace your processor. If you need to throttle calls to a downstream system, add rate limiting inside your `HandleMessageAsync` implementation.
 
 ## What the Library Handles

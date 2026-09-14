@@ -15,6 +15,7 @@ public class DlqConsumerTests : IDisposable
     private const string TestOriginalTopic = "test-original-topic";
     private const string TestMessageKey = "test-key";
     private const string TestBatchId = "test-batch-id";
+    private const long DefaultHighWatermark = 1000;
 
     private readonly IConsumer<string, TestMessage> _kafkaConsumer;
     private readonly IProducer<string, TestMessage> _producer;
@@ -35,6 +36,27 @@ public class DlqConsumerTests : IDisposable
         _logger.IsEnabled(Arg.Any<LogLevel>()).Returns(true);
         _metrics = new KafkaWorkerMetrics();
         _cts = new CancellationTokenSource();
+
+        SetFinishLine(DefaultHighWatermark);
+    }
+
+    /// <summary>
+    /// Points the consumer at the given partitions and sets each one's high watermark, which is what
+    /// the sweep snapshots as its finish line.
+    /// </summary>
+    private void SetFinishLine(long highWatermark, params int[] partitions)
+    {
+        var assignment = (partitions.Length == 0 ? new[] { 0 } : partitions)
+            .Select(p => new TopicPartition(TestDlqTopic, new Partition(p)))
+            .ToList();
+
+        _kafkaConsumer.Assignment.Returns(assignment);
+        foreach (var topicPartition in assignment)
+        {
+            _kafkaConsumer.QueryWatermarkOffsets(topicPartition, Arg.Any<TimeSpan>())
+                .Returns(new WatermarkOffsets(new Offset(0), new Offset(highWatermark)));
+        }
+
     }
 
     public void Dispose()
@@ -94,7 +116,9 @@ public class DlqConsumerTests : IDisposable
         string? originalTopic = TestOriginalTopic,
         bool isInvalidMessage = false,
         int reprocessAttempt = 0,
-        string? batchId = null)
+        string? batchId = null,
+        long offset = 1,
+        int partition = 0)
     {
         var headers = new Headers();
 
@@ -121,8 +145,8 @@ public class DlqConsumerTests : IDisposable
         return new ConsumeResult<string, TestMessage>
         {
             Topic = TestDlqTopic,
-            Partition = new Partition(0),
-            Offset = new Offset(1),
+            Partition = new Partition(partition),
+            Offset = new Offset(offset),
             Message = new Message<string, TestMessage>
             {
                 Key = key,
@@ -389,7 +413,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_StopsOnPartitionEof()
+    public async Task ProcessBatch_PartitionEof_IsNeverHandledOrCommitted()
     {
         using var sut = CreateConsumer();
         var eofResult = new ConsumeResult<string, TestMessage>
@@ -410,7 +434,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_NullEofBreaksBatch_DoesNotContinueToNextMessage()
+    public async Task ProcessBatch_PartitionEof_IsSkippedAndProcessingContinues()
     {
         using var sut = CreateConsumer();
         var eofResult = new ConsumeResult<string, TestMessage>
@@ -426,9 +450,10 @@ public class DlqConsumerTests : IDisposable
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
 
-        // EOF stops the batch, so the message after it is never processed
-        await _messageHandler.DidNotReceive()
-            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
+        // An EOF marker carries no record, and bounding the sweep is the finish line's job now, so
+        // the message behind it is still processed rather than stranded until the next tick.
+        await _messageHandler.Received(1)
+            .HandleMessageAsync(validMsg.Message.Value, Arg.Any<CancellationToken>());
     }
 
     #endregion
@@ -651,64 +676,156 @@ public class DlqConsumerTests : IDisposable
 
     #endregion
 
-    #region Batch ID loop detection
+    #region Finish line - the sweep stops at the end of the log as it stood when it began
 
     [Fact]
-    public async Task ProcessBatch_StopsWhenEncountersCurrentBatchId()
+    public async Task ProcessBatch_StopsAtTheFinishLine()
     {
         using var sut = CreateConsumer();
-        var msgWithCurrentBatchId = CreateDlqConsumeResult(key: "looped-key", batchId: TestBatchId);
-        SetupConsumeSequence(msgWithCurrentBatchId);
+        SetFinishLine(highWatermark: 5);
+        // Offset 5 is the snapshotted end of the log, so this record was appended during the sweep.
+        var appendedDuringSweep = CreateDlqConsumeResult(key: "re-enqueued", offset: 5);
+        SetupConsumeSequence(appendedDuringSweep);
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
 
-        // Message with matching batch ID should stop the batch without processing
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
         _kafkaConsumer.DidNotReceive().Commit();
     }
 
     [Fact]
-    public async Task ProcessBatch_ProcessesMessagesWithDifferentBatchId()
+    public async Task ProcessBatch_ProcessesEverythingBelowTheFinishLine()
     {
         using var sut = CreateConsumer();
-        var msg = CreateDlqConsumeResult(key: "key-1", batchId: "old-batch-id");
-        SetupConsumeSequence(msg);
+        SetFinishLine(highWatermark: 3);
+        var first = CreateDlqConsumeResult(key: "key-1", offset: 1);
+        var second = CreateDlqConsumeResult(key: "key-2", offset: 2);
+        SetupConsumeSequence(first, second);
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
 
-        // Different batch ID should not stop processing
-        await _messageHandler.Received(1)
-            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
+        await _messageHandler.Received(1).HandleMessageAsync(first.Message.Value, Arg.Any<CancellationToken>());
+        await _messageHandler.Received(1).HandleMessageAsync(second.Message.Value, Arg.Any<CancellationToken>());
+        _kafkaConsumer.Received(2).Commit();
     }
 
     [Fact]
-    public async Task ProcessBatch_ProcessesMessagesBeforeCurrentBatchIdEncountered()
+    public async Task ProcessBatch_ProcessesMessagesUpToTheFinishLineThenStops()
     {
         using var sut = CreateConsumer();
-        var msg1 = CreateDlqConsumeResult(key: "key-1", batchId: "old-batch");
-        var msg2 = CreateDlqConsumeResult(key: "key-2", batchId: TestBatchId);
-        SetupConsumeSequence(msg1, msg2);
+        SetFinishLine(highWatermark: 2);
+        var beforeLine = CreateDlqConsumeResult(key: "key-1", offset: 1);
+        var atLine = CreateDlqConsumeResult(key: "key-2", offset: 2);
+        SetupConsumeSequence(beforeLine, atLine);
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
 
-        // First message processed, second (current batch ID) stops the batch
-        await _messageHandler.Received(1)
-            .HandleMessageAsync(msg1.Message.Value, Arg.Any<CancellationToken>());
+        await _messageHandler.Received(1).HandleMessageAsync(beforeLine.Message.Value, Arg.Any<CancellationToken>());
+        await _messageHandler.DidNotReceive().HandleMessageAsync(atLine.Message.Value, Arg.Any<CancellationToken>());
         _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
-    public async Task ProcessBatch_MessageWithNoBatchId_IsProcessedNormally()
+    public async Task ProcessBatch_SnapshotsTheFinishLineOnlyOnce()
     {
         using var sut = CreateConsumer();
-        var msgNoBatchId = CreateDlqConsumeResult(key: "key-no-batch", batchId: null);
-        SetupConsumeSequence(msgNoBatchId);
+        SetFinishLine(highWatermark: 10);
+        SetupConsumeSequence(
+            CreateDlqConsumeResult(key: "key-1", offset: 1),
+            CreateDlqConsumeResult(key: "key-2", offset: 2),
+            CreateDlqConsumeResult(key: "key-3", offset: 3));
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        // Re-reading the watermark mid-sweep would let the finish line drift ahead of this sweep's
+        // own re-enqueues, which is exactly what the snapshot exists to prevent.
+        _kafkaConsumer.Received(1).QueryWatermarkOffsets(Arg.Any<TopicPartition>(), Arg.Any<TimeSpan>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_BatchIdHeaderNoLongerStopsTheSweep()
+    {
+        using var sut = CreateConsumer();
+        SetFinishLine(highWatermark: 10);
+        // batch-id is now written for diagnostics only; the finish line decides where a sweep ends.
+        var stampedWithCurrentBatchId = CreateDlqConsumeResult(key: "looped-key", batchId: TestBatchId, offset: 1);
+        SetupConsumeSequence(stampedWithCurrentBatchId);
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.Received(1)
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_OnePartitionReachingTheFinishLineDoesNotAbandonTheOthers()
+    {
+        using var sut = CreateConsumer();
+        SetFinishLine(highWatermark: 4, 0, 1);
+        var doneOnPartition0 = CreateDlqConsumeResult(key: "p0-end", offset: 4, partition: 0);
+        var stillPendingOnPartition1 = CreateDlqConsumeResult(key: "p1-work", offset: 2, partition: 1);
+        SetupConsumeSequence(doneOnPartition0, stillPendingOnPartition1);
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        // The old batch-id guard broke out of the whole sweep here, stranding partition 1.
+        await _messageHandler.Received(1)
+            .HandleMessageAsync(stillPendingOnPartition1.Message.Value, Arg.Any<CancellationToken>());
+        _kafkaConsumer.Received(1).Pause(Arg.Is<IEnumerable<TopicPartition>>(
+            tps => tps.Single().Partition.Value == 0));
+    }
+
+    [Fact]
+    public async Task ProcessBatch_EndsOnceEveryPartitionHasReachedItsFinishLine()
+    {
+        using var sut = CreateConsumer();
+        SetFinishLine(highWatermark: 3, 0, 1);
+        var afterBothDone = CreateDlqConsumeResult(key: "never-reached", offset: 1, partition: 0);
+        SetupConsumeSequence(
+            CreateDlqConsumeResult(key: "p0-end", offset: 3, partition: 0),
+            CreateDlqConsumeResult(key: "p1-end", offset: 3, partition: 1),
+            afterBothDone);
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        await _messageHandler.DidNotReceive()
+            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_PartitionAssignedMidSweep_DoesNotStandInForAnUnfinishedOne()
+    {
+        using var sut = CreateConsumer();
+        SetFinishLine(highWatermark: 4, 0, 1);
+        // Partition 2 is not in the snapshot: it was assigned after the sweep began, so it has no
+        // finish line and is left for the next tick.
+        var rebalancedIn = CreateDlqConsumeResult(key: "p2", offset: 0, partition: 2);
+        var partition0Done = CreateDlqConsumeResult(key: "p0-end", offset: 4, partition: 0);
+        var partition1Work = CreateDlqConsumeResult(key: "p1-work", offset: 1, partition: 1);
+        SetupConsumeSequence(rebalancedIn, partition0Done, partition1Work);
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        // Counting paused partitions instead of checking the snapshot's membership would end the
+        // sweep once partition 2 and partition 0 were paused, stranding partition 1's work.
+        await _messageHandler.Received(1)
+            .HandleMessageAsync(partition1Work.Message.Value, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_SkipsTheSweepWhenNoPartitionsAreAssigned()
+    {
+        using var sut = CreateConsumer();
+        _kafkaConsumer.Assignment.Returns([]);
+        SetupConsumeSequence(CreateDlqConsumeResult(key: "key-1", offset: 1));
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        // Without a finish line the sweep could reach its own re-enqueues, so it does nothing.
+        await _messageHandler.DidNotReceive()
+            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
+        _kafkaConsumer.DidNotReceive().Commit();
     }
 
     #endregion
@@ -913,16 +1030,18 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_SkippedMessagesBeforeBatchIdLoop_AllCommitted()
+    public async Task ProcessBatch_SkippedMessagesBeforeTheFinishLine_AllCommitted()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 2);
-        var exceededMsg = CreateDlqConsumeResult(key: "exceeded", reprocessAttempt: 2);
-        var loopMsg = CreateDlqConsumeResult(key: "loop", batchId: TestBatchId);
-        SetupConsumeSequence(exceededMsg, loopMsg);
+        SetFinishLine(highWatermark: 2);
+        var exceededMsg = CreateDlqConsumeResult(key: "exceeded", reprocessAttempt: 2, offset: 1);
+        var pastFinishLine = CreateDlqConsumeResult(key: "re-enqueued", offset: 2);
+        SetupConsumeSequence(exceededMsg, pastFinishLine);
 
         await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
 
-        // Exceeded message committed, loop message stops batch without committing
+        // The exceeded message is skipped but committed; the record at the finish line ends the
+        // sweep without being committed, so the next tick picks it up.
         _kafkaConsumer.Received(1).StoreOffset(exceededMsg);
         _kafkaConsumer.Received(1).Commit();
         await _messageHandler.DidNotReceive()
