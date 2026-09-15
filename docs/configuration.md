@@ -29,7 +29,7 @@ Configure under `KafkaWorker:Consumer` (or a custom section — see [Multiple Co
 | `MaxRetries` | `int` | `3` | Retry attempts before sending to DLQ. **Set to `0` to disable retries entirely.** Range: 0–5 |
 | `DeadLetterTopic` | `string?` | `null` | DLQ topic. **Leave `null` to disable DLQ** — failed messages are logged and skipped |
 | `DeadLetterMaxReprocessAttempts` | `int` | `3` | Max times the DLQ consumer retries a message (1–5). Only applies when `DeadLetterTopic` is set |
-| `DeadLetterProcessingIntervalMinutes` | `int` | `60` | Minutes between DLQ reprocessing batches. Only applies when `DeadLetterTopic` is set |
+| `DeadLetterProcessingIntervalMinutes` | `int` | `60` | Minutes between DLQ reprocessing sweeps. Only applies when `DeadLetterTopic` is set |
 | `DeadLetterStartFrom` | `DateTimeOffset?` | `null` | UTC timestamp from which the DLQ consumer should start processing when no committed offsets exist. E.g. `"2025-06-01T00:00:00Z"` |
 | `MaxBatchSize` | `int` | `100` | Messages per batch handler call. Only applies to consumers registered with `AddKafkaWorkerBatch`. Range: 1–10000 |
 | `BatchLingerMs` | `int` | `500` | How long a batch keeps accumulating after its first message. Only applies to consumers registered with `AddKafkaWorkerBatch`. Range: 0–60000 |

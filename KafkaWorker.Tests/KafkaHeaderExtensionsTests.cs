@@ -47,14 +47,6 @@ public class KafkaHeaderExtensionsTests
     }
 
     [Fact]
-    public void GetBatchId_NullValuedHeader_ReturnsEmpty()
-    {
-        var headers = new Headers { { KafkaHeaders.BatchId, null } };
-
-        Assert.Equal(string.Empty, headers.GetBatchId());
-    }
-
-    [Fact]
     public void GetReprocessAttemptCount_NullValuedHeader_ReturnsZero()
     {
         var headers = new Headers { { KafkaHeaders.ReprocessedAttempt, null } };

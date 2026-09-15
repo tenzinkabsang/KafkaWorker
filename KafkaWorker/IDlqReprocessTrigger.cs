@@ -1,7 +1,7 @@
 namespace KafkaWorker;
 
 /// <summary>
-/// Triggers an immediate dead letter queue reprocessing batch without waiting for the next
+/// Triggers an immediate dead letter queue reprocessing sweep without waiting for the next
 /// scheduled tick (<see cref="KafkaWorkerConfig.DeadLetterProcessingIntervalMinutes"/>).
 /// </summary>
 /// <remarks>
@@ -18,16 +18,16 @@ namespace KafkaWorker;
 /// });
 /// </code>
 /// <para>
-/// The regular schedule is unaffected — triggering simply wakes the DLQ consumer early for one batch.
+/// The regular schedule is unaffected — triggering simply wakes the DLQ consumer early for one sweep.
 /// </para>
 /// </remarks>
 /// <typeparam name="TMessage">The message type whose DLQ consumer should run.</typeparam>
 public interface IDlqReprocessTrigger<TMessage> where TMessage : class
 {
     /// <summary>
-    /// Wakes the DLQ consumer to run a reprocessing batch immediately. Safe to call at any time
+    /// Wakes the DLQ consumer to run a reprocessing sweep immediately. Safe to call at any time
     /// and from any thread; calls made while a trigger is already pending coalesce into a single
-    /// batch. If a batch is currently running, another one runs right after it completes.
+    /// sweep. If a sweep is currently running, another one runs right after it completes.
     /// </summary>
     void Trigger();
 }

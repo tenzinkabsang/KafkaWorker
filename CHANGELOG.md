@@ -40,6 +40,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   EOF would have been wrong, since EOF tracks the *current* end of the log and so includes the
   sweep's own re-enqueues.
 
+- **DLQ log messages now say "sweep" rather than "batch".** The DLQ consumer has always processed a
+  whole pass over the dead letter topic, but 2.5.0 introduced batch processing as a real feature, so
+  the two meanings of "batch" now collide in the logs. The six affected messages read as sweeps:
+
+  | Event | Before | After |
+  | --- | --- | --- |
+  | 201 | `Processing dead letter queue batch {BatchId} for topic: …` | `Starting dead letter queue sweep {BatchId} of topic: …` |
+  | 205 | `Stopping batch due to failed reprocess.` | `Stopping the sweep due to failed reprocess.` |
+  | 206 | `Finished processing dead letter queue batch for topic: …` | `Finished the dead letter queue sweep of topic: …` |
+  | 207 | `Error processing dead letter queue batch for topic: …` | `Error during the dead letter queue sweep of topic: …` |
+  | 219 | `… no record offset available. Ending batch.` | `… no record offset available. Ending the sweep.` |
+  | 221 | `Running immediate batch for dead letter topic: …` | `Running an immediate sweep of dead letter topic: …` |
+
+  **Event IDs are unchanged** — they remain the stable handle for alerting. Anything matching on the
+  message text needs updating. The `batch-id` header keeps its name: it is on the wire, documented,
+  and already stamped on messages sitting in dead letter topics.
+
 ### Fixed
 
 - A failed offset commit no longer ends the DLQ sweep. Every commit in the sweep was unguarded, so a

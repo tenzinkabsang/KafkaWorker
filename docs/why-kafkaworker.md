@@ -191,9 +191,9 @@ Everything else — the loop, offsets, retries, DLQ publishing *and* reprocessin
 
 Honesty matters more than adoption. Use raw `Confluent.Kafka` (or another tool) if you need:
 
-- **Batch or parallel processing** — KafkaWorker processes messages sequentially per consumer, one at a time. That's a feature for ordering and backpressure, but a ceiling for very high-throughput topics.
+- **Parallel processing** — a consumer handles its messages on one thread, whether one at a time or in batches. That's a feature for ordering and backpressure, but a ceiling for very high-throughput topics.
 - **Exactly-once semantics / transactions** — the library is at-least-once by design; handlers must be idempotent.
-- **Custom commit strategies** — offsets are stored per message and flushed by the client's background auto-commit; there is no synchronous per-message or commit-every-N mode.
+- **Custom commit strategies** — offsets are flushed by the client's background auto-commit, or synchronously at each batch boundary in batch mode. There is no per-message synchronous or commit-every-N mode.
 - **Consuming without a consumer group**, manual partition assignment, or other low-level control.
 
 For the common case — "consume a topic, run business logic per message, don't lose anything, don't page me for one bad payload" — that's exactly what KafkaWorker is for.

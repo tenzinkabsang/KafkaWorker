@@ -19,9 +19,6 @@ internal static class KafkaHeaderExtensions
     public static void AddUtf8(this Headers headers, string key, string value)
         => headers.Add(key, Encoding.UTF8.GetBytes(value));
 
-    public static string GetBatchId(this Headers headers)
-        => headers.GetValue(KafkaHeaders.BatchId) ?? string.Empty;
-
     public static int GetReprocessAttemptCount(this Headers headers)
     {
         var headerValue = headers.GetValue(KafkaHeaders.ReprocessedAttempt);

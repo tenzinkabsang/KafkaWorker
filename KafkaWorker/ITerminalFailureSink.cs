@@ -33,7 +33,7 @@ namespace KafkaWorker;
 /// </para>
 /// <para>
 /// The sink is best-effort: an exception it throws is logged at <c>Error</c> and never crashes the
-/// consumer, blocks the batch, or prevents the offset from advancing. If the sink write itself must
+/// consumer, interrupts processing, or prevents the offset from advancing. If the sink write itself must
 /// never be lost, make the sink internally durable (e.g., write-ahead or retry within the sink).
 /// </para>
 /// </remarks>

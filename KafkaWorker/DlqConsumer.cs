@@ -12,7 +12,7 @@ namespace KafkaWorker;
 /// </summary>
 /// <remarks>
 /// The consumer runs on a configurable interval (default: 60 minutes) and processes all pending
-/// DLQ messages in each batch. Messages marked as invalid (via <see cref="InvalidMessageException"/>)
+/// DLQ messages in each sweep. Messages marked as invalid (via <see cref="InvalidMessageException"/>)
 /// or that have exceeded the maximum reprocess attempts are skipped.
 /// <para>
 /// Messages are reprocessed in place by invoking the registered <see cref="IMessageHandler{TMessage}"/>.
@@ -80,19 +80,20 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                 {
                     await triggerRead;
                     triggerRead = null;
-                    LogTriggeredBatch(logger, DeadLetterTopic);
+                    LogSweepTriggered(logger, DeadLetterTopic);
                 }
                 else
                 {
                     await delay;
                 }
 
-                // Each iteration generate a unique guid as an identifier for the batch. This allows us to track which messages have been processed in this batch
+                // A unique id per sweep, stamped onto whatever this sweep re-enqueues. Purely a
+                // diagnostic breadcrumb: the finish line is what bounds the sweep.
                 var batchId = Guid.NewGuid().ToString();
 
-                LogProcessingBatch(logger, batchId, DeadLetterTopic);
+                LogSweepStarting(logger, batchId, DeadLetterTopic);
 
-                await ProcessDeadLetterQueueBatchAsync(batchId, stoppingToken);
+                await SweepDeadLetterQueueAsync(batchId, stoppingToken);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -107,12 +108,12 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     }
 
     /// <summary>
-    /// This method subscribes to the dead letter topic and processes new messages, committing offsets
-    /// after each message is handled. The sweep ends when every assigned partition reaches the finish
+    /// Subscribes to the dead letter topic and reprocesses what it finds, committing offsets after
+    /// each message is handled. The sweep ends when every assigned partition reaches the finish
     /// line snapshotted at the start, when the topic goes quiet, or when the cancellation token is
     /// triggered.
     /// </summary>
-    internal async Task ProcessDeadLetterQueueBatchAsync(string batchId, CancellationToken stoppingToken)
+    internal async Task SweepDeadLetterQueueAsync(string batchId, CancellationToken stoppingToken)
     {
         using var consumer = consumerFactory.Create();
 
@@ -139,12 +140,12 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                     var record = ex.ConsumerRecord;
                     if (record is null || record.Offset == Offset.Unset)
                     {
-                        // No record offset to skip past — end the batch and retry on the next tick.
+                        // No record offset to skip past — end the sweep and retry on the next tick.
                         LogDlqConsumeError(logger, ex, DeadLetterTopic);
                         break;
                     }
 
-                    // An undeserializable DLQ record would otherwise abort every batch at the same
+                    // An undeserializable DLQ record would otherwise abort every sweep at the same
                     // offset and wedge the DLQ permanently. Skip it and commit past it. Records the
                     // main consumer captured as raw bytes (deserialization-failed header) are
                     // expected to be undeserializable — they await manual redrive, so skip quietly.
@@ -209,7 +210,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                 if (consumeResult.Message?.Value == null)
                 {
                     // Tombstone (null value): commit past it and keep processing — treating it as
-                    // batch end would leave the offset behind it and wedge the DLQ forever.
+                    // the end of the sweep would leave the offset behind it and wedge the DLQ forever.
                     LogDlqTombstoneSkipped(logger, DeadLetterTopic, consumeResult.Partition.Value, consumeResult.Offset.Value);
                     consumer.StoreOffset(consumeResult);
                     CommitStoredOffsets(consumer);
@@ -220,7 +221,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
                 if (!success)
                 {
-                    LogStoppingBatch(logger, consumeResult.Message.Key);
+                    LogSweepStopping(logger, consumeResult.Message.Key);
                     break;
                 }
 
@@ -228,7 +229,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                 CommitStoredOffsets(consumer);
             }
 
-            LogFinishedBatch(logger, DeadLetterTopic);
+            LogSweepFinished(logger, DeadLetterTopic);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
@@ -236,7 +237,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
         }
         catch (Exception ex)
         {
-            LogBatchError(logger, ex, DeadLetterTopic);
+            LogSweepError(logger, ex, DeadLetterTopic);
         }
         finally
         {
@@ -345,7 +346,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
     /// <summary>
     /// Returns true if the message was handled (reprocessed or intentionally skipped) and its
-    /// offset should be committed. Returns false if a produce operation failed — the batch should stop.
+    /// offset should be committed. Returns false if a produce operation failed — the sweep should stop.
     /// </summary>
     /// <remarks>
     /// The message is reprocessed in place by invoking the registered message handler. On success the
@@ -407,7 +408,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
     /// <summary>
     /// Invokes the optional <see cref="ITerminalFailureSink{TMessage}"/> when a DLQ message is
-    /// permanently skipped. Best-effort: sink failures are logged and never affect the batch or the
+    /// permanently skipped. Best-effort: sink failures are logged and never affect the sweep or the
     /// offset commit. When <paramref name="error"/> is null, the message's <c>error-message</c>
     /// header (the last recorded failure) is used.
     /// </summary>
@@ -449,10 +450,10 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
     /// <summary>
     /// Re-enqueues a message that failed in-place reprocessing back to the dead letter topic with an
-    /// incremented reprocess-attempt count and the current batch id. The re-enqueued record lands
-    /// beyond this sweep's finish line, so it is naturally left for a future tick; the batch id is
-    /// carried purely as a diagnostic breadcrumb. Returns false if the produce fails so the batch
-    /// stops without committing.
+    /// incremented reprocess-attempt count and the current sweep id. The re-enqueued record lands
+    /// beyond this sweep's finish line, so it is naturally left for a future tick; the id is carried
+    /// purely as a diagnostic breadcrumb, under the historical <c>batch-id</c> header name. Returns
+    /// false if the produce fails so the sweep stops without committing.
     /// </summary>
     private async Task<bool> ReEnqueueToDeadLetterAsync(
         ConsumeResult<TKey, TMessage> consumeResult,
@@ -500,8 +501,8 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     [LoggerMessage(EventId = 200, Level = LogLevel.Information, Message = "Starting KafkaDlqConsumer for topic: {DeadLetterTopic} with processing interval: {IntervalMinutes} minutes")]
     private static partial void LogStarting(ILogger logger, string? deadLetterTopic, int intervalMinutes);
 
-    [LoggerMessage(EventId = 201, Level = LogLevel.Information, Message = "Processing dead letter queue batch {BatchId} for topic: {DeadLetterTopic}")]
-    private static partial void LogProcessingBatch(ILogger logger, string batchId, string? deadLetterTopic);
+    [LoggerMessage(EventId = 201, Level = LogLevel.Information, Message = "Starting dead letter queue sweep {BatchId} of topic: {DeadLetterTopic}")]
+    private static partial void LogSweepStarting(ILogger logger, string batchId, string? deadLetterTopic);
 
     [LoggerMessage(EventId = 202, Level = LogLevel.Warning, Message = "KafkaDlqConsumer shutting down.")]
     private static partial void LogShuttingDown(ILogger logger);
@@ -512,14 +513,14 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     [LoggerMessage(EventId = 204, Level = LogLevel.Information, Message = "Subscribed to dead letter topic: {DeadLetterTopic}")]
     private static partial void LogSubscribedToDlq(ILogger logger, string? deadLetterTopic);
 
-    [LoggerMessage(EventId = 205, Level = LogLevel.Warning, Message = "Stopping batch due to failed reprocess. Will retry on next tick. Key: {MessageKey}")]
-    private static partial void LogStoppingBatch(ILogger logger, TKey messageKey);
+    [LoggerMessage(EventId = 205, Level = LogLevel.Warning, Message = "Stopping the sweep due to failed reprocess. Will retry on next tick. Key: {MessageKey}")]
+    private static partial void LogSweepStopping(ILogger logger, TKey messageKey);
 
-    [LoggerMessage(EventId = 206, Level = LogLevel.Information, Message = "Finished processing dead letter queue batch for topic: {DeadLetterTopic}")]
-    private static partial void LogFinishedBatch(ILogger logger, string? deadLetterTopic);
+    [LoggerMessage(EventId = 206, Level = LogLevel.Information, Message = "Finished the dead letter queue sweep of topic: {DeadLetterTopic}")]
+    private static partial void LogSweepFinished(ILogger logger, string? deadLetterTopic);
 
-    [LoggerMessage(EventId = 207, Level = LogLevel.Critical, Message = "Error processing dead letter queue batch for topic: {DeadLetterTopic}")]
-    private static partial void LogBatchError(ILogger logger, Exception ex, string? deadLetterTopic);
+    [LoggerMessage(EventId = 207, Level = LogLevel.Critical, Message = "Error during the dead letter queue sweep of topic: {DeadLetterTopic}")]
+    private static partial void LogSweepError(ILogger logger, Exception ex, string? deadLetterTopic);
 
     [LoggerMessage(EventId = 208, Level = LogLevel.Warning, Message = "Skipping invalid message (will not succeed on retry). Key: {MessageKey}")]
     private static partial void LogSkippingInvalidMessage(ILogger logger, TKey messageKey);
@@ -545,14 +546,14 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     [LoggerMessage(EventId = 218, Level = LogLevel.Critical, Message = "Skipping DLQ message that failed to deserialize. DLQ Topic: {DeadLetterTopic}, Partition: {Partition}, Offset: {Offset}")]
     private static partial void LogDlqPoisonMessageSkipped(ILogger logger, Exception ex, string? deadLetterTopic, int partition, long offset);
 
-    [LoggerMessage(EventId = 219, Level = LogLevel.Error, Message = "Consume error on DLQ topic {DeadLetterTopic}; no record offset available. Ending batch.")]
+    [LoggerMessage(EventId = 219, Level = LogLevel.Error, Message = "Consume error on DLQ topic {DeadLetterTopic}; no record offset available. Ending the sweep.")]
     private static partial void LogDlqConsumeError(ILogger logger, Exception ex, string? deadLetterTopic);
 
     [LoggerMessage(EventId = 220, Level = LogLevel.Debug, Message = "Skipping tombstone (null value) DLQ message and committing offset. DLQ Topic: {DeadLetterTopic}, Partition: {Partition}, Offset: {Offset}")]
     private static partial void LogDlqTombstoneSkipped(ILogger logger, string? deadLetterTopic, int partition, long offset);
 
-    [LoggerMessage(EventId = 221, Level = LogLevel.Information, Message = "On-demand reprocess trigger received. Running immediate batch for dead letter topic: {DeadLetterTopic}")]
-    private static partial void LogTriggeredBatch(ILogger logger, string? deadLetterTopic);
+    [LoggerMessage(EventId = 221, Level = LogLevel.Information, Message = "On-demand reprocess trigger received. Running an immediate sweep of dead letter topic: {DeadLetterTopic}")]
+    private static partial void LogSweepTriggered(ILogger logger, string? deadLetterTopic);
 
     [LoggerMessage(EventId = 222, Level = LogLevel.Error, Message = "Terminal failure sink threw; the terminal failure record was not persisted. Key: {MessageKey}")]
     private static partial void LogTerminalFailureSinkFailed(ILogger logger, Exception ex, TKey messageKey);
