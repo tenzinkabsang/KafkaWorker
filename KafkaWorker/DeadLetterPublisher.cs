@@ -10,7 +10,7 @@ namespace KafkaWorker;
 /// </summary>
 /// <remarks>
 /// This helper is policy-free: it only builds the merged header set and produces with the
-/// supplied resilience pipeline. Failure-handling semantics (best-effort vs. stop-the-batch)
+/// supplied resilience pipeline. Failure-handling semantics (best-effort vs. stop-the-sweep)
 /// remain the responsibility of each caller.
 /// </remarks>
 internal static class DeadLetterPublisher

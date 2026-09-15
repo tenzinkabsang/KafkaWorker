@@ -89,7 +89,7 @@ The DLQ consumer runs as a hosted service alongside the main consumer. It reproc
 |---------|------|---------|-------------|
 | `DeadLetterTopic` | `string?` | `null` | DLQ topic name. Leave `null` to disable DLQ entirely |
 | `DeadLetterMaxReprocessAttempts` | `int` | `3` | Max times a message is reprocessed before being permanently skipped (1–5) |
-| `DeadLetterProcessingIntervalMinutes` | `int` | `60` | Minutes between reprocessing batches |
+| `DeadLetterProcessingIntervalMinutes` | `int` | `60` | Minutes between reprocessing sweeps |
 | `DeadLetterStartFrom` | `DateTimeOffset?` | `null` | UTC timestamp to start from when no committed offsets exist |
 
 ---
@@ -161,7 +161,7 @@ A message is skipped (not reprocessed) if:
 - It is a **tombstone** (null value) — committed past without invoking the handler
 - It **cannot be deserialized** — committed past and counted in the `dlq.messages_skipped` metric with reason `deserialization_failed`. A record carrying the `deserialization-failed` header (raw bytes [captured by the main consumer](#poison-message-capture), awaiting manual redrive) is skipped quietly at `Debug`; any other undeserializable record is logged at `Critical`
 
-Tombstones and undeserializable records never end the batch — they are committed past so the DLQ consumer always makes progress.
+Tombstones and undeserializable records never end the sweep — they are committed past so the DLQ consumer always makes progress.
 
 ### How a sweep knows when to stop
 
@@ -175,9 +175,9 @@ Partition count needs no special consideration: each partition gets its own fini
 
 ### Error Handling
 
-Unlike the main consumer, the DLQ consumer **preserves messages on failure**. If re-enqueuing a failed message back to the DLQ fails, it stops the batch without committing. The message will be retried on the next scheduled run.
+Unlike the main consumer, the DLQ consumer **preserves messages on failure**. If re-enqueuing a failed message back to the DLQ fails, it stops the sweep without committing. The message will be retried on the next scheduled run.
 
-A consume error that carries no record offset (e.g. a transient broker error) also ends the batch without committing; the batch is retried on the next tick.
+A consume error that carries no record offset (e.g. a transient broker error) also ends the sweep without committing; the sweep is retried on the next tick.
 
 {: .important }
 > **Size DLQ retention generously** — the DLQ topic doubles as your failure archive: terminal messages and captured poison records stay in it *only* until the topic's retention expires. Set a long retention on DLQ topics, or make it unlimited:
@@ -237,13 +237,13 @@ Any DI lifetime works — the sink is resolved from a fresh scope per call, so s
 A message that reaches the DLQ successfully does *not* fire the sink until it later becomes terminal there. Records that failed deserialization never fire the typed sink — they are [captured as raw bytes](#poison-message-capture) instead.
 
 {: .note }
-> The sink is **best-effort**: an exception it throws is logged at `Error` and never crashes the consumer, stops the batch, or prevents the offset from advancing. If the sink write must never be lost, make the sink itself durable (retry or write-ahead internally).
+> The sink is **best-effort**: an exception it throws is logged at `Error` and never crashes the consumer, interrupts processing, or prevents the offset from advancing. If the sink write must never be lost, make the sink itself durable (retry or write-ahead internally).
 
 ---
 
 ## On-Demand Reprocessing
 
-The DLQ consumer normally waits for its configured interval between batches. When you want failed messages retried *right now* — say, a downstream API was down, messages piled into the DLQ, and the API has just been fixed — inject `IDlqReprocessTrigger<TMessage>` (registered automatically by `AddKafkaWorkerDeadLetter`) and call `Trigger()`:
+The DLQ consumer normally waits for its configured interval between sweeps. When you want failed messages retried *right now* — say, a downstream API was down, messages piled into the DLQ, and the API has just been fixed — inject `IDlqReprocessTrigger<TMessage>` (registered automatically by `AddKafkaWorkerDeadLetter`) and call `Trigger()`:
 
 ```csharp
 // Example: an admin endpoint in a host that also runs ASP.NET
@@ -254,10 +254,10 @@ app.MapPost("/admin/dlq/reprocess", (IDlqReprocessTrigger<OrderMessage> trigger)
 });
 ```
 
-`Trigger()` wakes the DLQ consumer immediately and runs one normal batch, then the regular schedule resumes. It is safe to call at any time and from any thread:
+`Trigger()` wakes the DLQ consumer immediately and runs one normal sweep, then the regular schedule resumes. It is safe to call at any time and from any thread:
 
-- Repeated calls while a trigger is already pending **coalesce** into a single batch.
-- A trigger fired while a batch is running queues exactly one follow-up batch.
+- Repeated calls while a trigger is already pending **coalesce** into a single sweep.
+- A trigger fired while a sweep is running queues exactly one follow-up sweep.
 - The entry point is yours to choose — an HTTP endpoint, a console command, a chat-ops bot, a health-check remediation. The library deliberately ships only the injectable service, not an endpoint.
 
 No configuration is involved. If you don't need on-demand retries, a lower `DeadLetterProcessingIntervalMinutes` is the config-only alternative.

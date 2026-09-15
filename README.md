@@ -36,7 +36,7 @@ dotnet add package KafkaWorker.JsonSchema     # for JSON + Schema Registry
 - **Built-in retry with exponential backoff** *(optional)* — Configurable retry attempts (0–5) with jitter. Set `MaxRetries` to `0` to disable
 - **Dead letter queue support** *(optional)* — Failed messages are sent to a DLQ. Leave `DeadLetterTopic` null to disable
 - **Periodic DLQ reprocessing** *(optional)* — Register `AddKafkaWorkerDeadLetter` to automatically retry failed messages on a schedule. Messages are reprocessed **in place** (via your handler) so they never return to the original topic
-- **On-demand DLQ reprocessing** — Inject `IDlqReprocessTrigger<TMessage>` and call `Trigger()` to run a reprocessing batch immediately (e.g., right after a downstream outage is fixed) instead of waiting for the next tick
+- **On-demand DLQ reprocessing** — Inject `IDlqReprocessTrigger<TMessage>` and call `Trigger()` to run a reprocessing sweep immediately (e.g., right after a downstream outage is fixed) instead of waiting for the next tick
 - **Invalid message handling** — Skip retries for messages that will never succeed via `InvalidMessageException`
 - **Poison-message capture** — A message that fails deserialization can't crash the host or wedge the DLQ: its raw bytes are captured to the DLQ for manual inspection and redrive, and the consumer moves on
 - **Terminal failure sink** *(optional)* — Implement `ITerminalFailureSink<TMessage>` to persist permanently failed messages somewhere durable and queryable (e.g. a database table) at the exact moment the library gives up on them
@@ -205,7 +205,7 @@ Configure under `KafkaWorker:Consumer` (or a custom section — see [Multiple Co
 | `MaxRetries` | `int` | `3` | Retry attempts before sending to DLQ. **Set to `0` to disable retries entirely.** Range: 0–5 |
 | `DeadLetterTopic` | `string?` | `null` | DLQ topic. **Leave `null` to disable DLQ** — failed messages are logged and skipped |
 | `DeadLetterMaxReprocessAttempts` | `int` | `3` | Max times the DLQ consumer retries a message (1–5). Only applies when `DeadLetterTopic` is set |
-| `DeadLetterProcessingIntervalMinutes` | `int` | `60` | Minutes between DLQ reprocessing batches. Only applies when `DeadLetterTopic` is set |
+| `DeadLetterProcessingIntervalMinutes` | `int` | `60` | Minutes between DLQ reprocessing sweeps. Only applies when `DeadLetterTopic` is set |
 | `DeadLetterStartFrom` | `DateTimeOffset?` | `null` | UTC timestamp from which the DLQ consumer should start processing when no committed offsets exist. Useful when enabling DLQ after the system has been running. E.g. `"2025-06-01T00:00:00Z"` |
 | `MaxBatchSize` | `int` | `100` | Messages per batch handler call. Only applies to consumers registered with `AddKafkaWorkerBatch`. Range: 1–10000 |
 | `BatchLingerMs` | `int` | `500` | How long a batch keeps accumulating after its first message. Only applies to consumers registered with `AddKafkaWorkerBatch`. Range: 0–60000 |
@@ -413,7 +413,7 @@ Metrics work with any `System.Diagnostics.Metrics`-compatible listener — OpenT
 - **At-least-once delivery** — An offset is stored only after its message is handled, and stored offsets are committed in the background (every ~5s by default, plus on rebalance and graceful shutdown). After a *hard* crash, messages processed since the last background flush are redelivered on restart — handlers should be idempotent. Tune the window with `AutoCommitIntervalMs` via `configureConsumer`.
 - **Dead-lettered messages are retried out of order** — by the time a DLQ message succeeds, later messages for the same key have usually been processed. Handlers should be idempotent and order-tolerant; see the [DLQ documentation](https://tenzinkabsang.github.io/KafkaWorker/dead-letter-queue) for details and the terminal-failures runbook.
 - **DLQ is best-effort from the main consumer** — The main consumer attempts to publish failed messages to the DLQ with Polly retry, but if all attempts fail it logs at `Critical`, commits the offset, and moves on. Processing incoming records takes priority over guaranteeing every failed message reaches the DLQ.
-- **DLQ consumer preserves messages on failure** — Unlike the main consumer, if the DLQ consumer fails to re-enqueue a message back to the DLQ, it stops the batch without committing. The message will be retried on the next scheduled run.
+- **DLQ consumer preserves messages on failure** — Unlike the main consumer, if the DLQ consumer fails to re-enqueue a message back to the DLQ, it stops the sweep without committing. The message will be retried on the next scheduled run.
 - **In-place reprocessing requires a handler** — The DLQ consumer invokes `IMessageHandler<TMessage>` directly, so register the consumer (`AddKafkaWorker`) before `AddKafkaWorkerDeadLetter`. Registration throws at startup if the handler is missing.
 - **Backpressure** — The consume loop processes messages sequentially, so it naturally applies backpressure — Kafka won't outpace your processor. If you need to throttle calls to a downstream system, add rate limiting inside your `HandleMessageAsync` implementation.
 

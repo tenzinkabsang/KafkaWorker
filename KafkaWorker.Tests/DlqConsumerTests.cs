@@ -199,7 +199,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     /// <summary>
-    /// Sets up the Kafka consumer to return the given results in order, then return null (batch end).
+    /// Sets up the Kafka consumer to return the given results in order, then return null (end of the sweep).
     /// </summary>
     private void SetupConsumeSequence(params ConsumeResult<string, TestMessage>[] results)
     {
@@ -221,51 +221,51 @@ public class DlqConsumerTests : IDisposable
     #region Subscription and cleanup
 
     [Fact]
-    public async Task ProcessBatch_SubscribesToDeadLetterTopic()
+    public async Task Sweep_SubscribesToDeadLetterTopic()
     {
         using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _kafkaConsumer.Received(1).Subscribe(TestDlqTopic);
     }
 
     [Fact]
-    public async Task ProcessBatch_ClosesConsumerAfterBatch()
+    public async Task Sweep_ClosesConsumerWhenDone()
     {
         using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _kafkaConsumer.Received(1).Close();
     }
 
     [Fact]
-    public async Task ProcessBatch_ClosesConsumer_EvenOnError()
+    public async Task Sweep_ClosesConsumer_EvenOnError()
     {
         using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
             .Throws(new KafkaException(new Error(ErrorCode.BrokerNotAvailable)));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _kafkaConsumer.Received(1).Close();
     }
 
     [Fact]
-    public async Task ProcessBatch_LogsFinishedProcessing()
+    public async Task Sweep_LogsFinishedProcessing()
     {
         using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _logger.Received().Log(
             LogLevel.Information,
             Arg.Any<EventId>(),
-            Arg.Is<object>(o => o.ToString()!.Contains("Finished processing dead letter queue batch")),
+            Arg.Is<object>(o => o.ToString()!.Contains("Finished the dead letter queue sweep")),
             Arg.Any<Exception?>(),
             Arg.Any<Func<object, Exception?, string>>());
     }
@@ -275,13 +275,13 @@ public class DlqConsumerTests : IDisposable
     #region Happy path - in-place reprocessing
 
     [Fact]
-    public async Task ProcessBatch_InvokesHandlerAndCommits_WithoutProducing()
+    public async Task Sweep_InvokesHandlerAndCommits_WithoutProducing()
     {
         using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.Received(1)
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
@@ -293,41 +293,41 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_PassesMessageValueToHandler()
+    public async Task Sweep_PassesMessageValueToHandler()
     {
         using var sut = CreateConsumer();
         var value = new TestMessage { Data = "reprocess-me" };
         var dlqMessage = CreateDlqConsumeResult(value: value);
         SetupConsumeSequence(dlqMessage);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.Received(1)
             .HandleMessageAsync(value, Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ProcessBatch_CommitsOffsetAfterSuccessfulReprocess()
+    public async Task Sweep_CommitsOffsetAfterSuccessfulReprocess()
     {
         using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _kafkaConsumer.Received(1).StoreOffset(dlqMessage);
         _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
-    public async Task ProcessBatch_ProcessesMultipleMessagesInOrder()
+    public async Task Sweep_ProcessesMultipleMessagesInOrder()
     {
         using var sut = CreateConsumer();
         var msg1 = CreateDlqConsumeResult(key: "key-1");
         var msg2 = CreateDlqConsumeResult(key: "key-2");
         SetupConsumeSequence(msg1, msg2);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         Received.InOrder(() =>
         {
@@ -341,26 +341,26 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_CommitsOffsetPerMessage()
+    public async Task Sweep_CommitsOffsetPerMessage()
     {
         using var sut = CreateConsumer();
         var msg1 = CreateDlqConsumeResult(key: "key-1");
         var msg2 = CreateDlqConsumeResult(key: "key-2");
         SetupConsumeSequence(msg1, msg2);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _kafkaConsumer.Received(2).Commit();
     }
 
     [Fact]
-    public async Task ProcessBatch_LogsSuccessfulReprocess()
+    public async Task Sweep_LogsSuccessfulReprocess()
     {
         using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
         SetupConsumeSequence(dlqMessage);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _logger.Received().Log(
             LogLevel.Information,
@@ -372,15 +372,72 @@ public class DlqConsumerTests : IDisposable
 
     #endregion
 
-    #region Null / EOF message handling - stops batch
+    #region Commit failures - routine, not fatal to the sweep
 
     [Fact]
-    public async Task ProcessBatch_StopsOnNullConsumeResult()
+    public async Task Sweep_SurvivesACommitFailureAndKeepsSweeping()
+    {
+        using var sut = CreateConsumer();
+        SetupConsumeSequence(
+            CreateDlqConsumeResult(key: "first", offset: 1),
+            CreateDlqConsumeResult(key: "second", offset: 2));
+        _kafkaConsumer.When(c => c.Commit()).Throw(new KafkaException(ErrorCode.RebalanceInProgress));
+
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
+
+        // A rebalance that rejects the commit is routine: the next tick re-reads whatever was not
+        // committed. It must not abandon the partitions still draining in this sweep.
+        await _messageHandler.Received(2)
+            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
+        _logger.Received().Log(
+            LogLevel.Error,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Failed to commit offsets")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+        _logger.DidNotReceive().Log(
+            LogLevel.Critical,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task Sweep_TreatsNothingToCommitAsRoutine()
+    {
+        using var sut = CreateConsumer();
+        SetupConsumeSequence(CreateDlqConsumeResult());
+        _kafkaConsumer.When(c => c.Commit()).Throw(new KafkaException(ErrorCode.Local_NoOffset));
+
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
+
+        // Having nothing stored to commit is not a failure and must not be reported as one.
+        _logger.DidNotReceive().Log(
+            LogLevel.Error,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+        _logger.DidNotReceive().Log(
+            LogLevel.Critical,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    #endregion
+
+    #region Null / EOF message handling - stops the sweep
+
+    [Fact]
+    public async Task Sweep_StopsOnNullConsumeResult()
     {
         using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>()).Returns((ConsumeResult<string, TestMessage>)null!);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
@@ -388,7 +445,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_NullValueMessage_CommitsAndContinues()
+    public async Task Sweep_NullValueMessage_CommitsAndContinues()
     {
         using var sut = CreateConsumer();
         var tombstone = new ConsumeResult<string, TestMessage>
@@ -402,10 +459,10 @@ public class DlqConsumerTests : IDisposable
         var validMsg = CreateDlqConsumeResult(key: "after-tombstone");
         SetupConsumeSequence(tombstone, validMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
-        // A tombstone must not end the batch (that would wedge the DLQ at its offset forever);
-        // it is committed past and the batch continues with the next message.
+        // A tombstone must not end the sweep (that would wedge the DLQ at its offset forever);
+        // it is committed past and the sweep continues with the next message.
         _kafkaConsumer.Received(1).StoreOffset(tombstone);
         await _messageHandler.Received(1)
             .HandleMessageAsync(validMsg.Message.Value, Arg.Any<CancellationToken>());
@@ -413,7 +470,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_PartitionEof_IsNeverHandledOrCommitted()
+    public async Task Sweep_PartitionEof_IsNeverHandledOrCommitted()
     {
         using var sut = CreateConsumer();
         var eofResult = new ConsumeResult<string, TestMessage>
@@ -426,7 +483,7 @@ public class DlqConsumerTests : IDisposable
         };
         SetupConsumeSequence(eofResult);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
@@ -434,7 +491,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_PartitionEof_IsSkippedAndProcessingContinues()
+    public async Task Sweep_PartitionEof_IsSkippedAndProcessingContinues()
     {
         using var sut = CreateConsumer();
         var eofResult = new ConsumeResult<string, TestMessage>
@@ -448,7 +505,7 @@ public class DlqConsumerTests : IDisposable
         var validMsg = CreateDlqConsumeResult(key: "after-eof");
         SetupConsumeSequence(eofResult, validMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // An EOF marker carries no record, and bounding the sweep is the finish line's job now, so
         // the message behind it is still processed rather than stranded until the next tick.
@@ -461,7 +518,7 @@ public class DlqConsumerTests : IDisposable
     #region Poison messages - deserialization failures skip and commit
 
     [Fact]
-    public async Task ProcessBatch_ConsumeException_SkipsPoisonMessage_AndContinuesBatch()
+    public async Task Sweep_ConsumeException_SkipsPoisonMessage_AndKeepsSweeping()
     {
         using var sut = CreateConsumer();
         var validMsg = CreateDlqConsumeResult(key: "after-poison");
@@ -477,9 +534,9 @@ public class DlqConsumerTests : IDisposable
                 return null!;
             });
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
-        // Committed past the poison record (failed offset + 1) and kept processing the batch
+        // Committed past the poison record (failed offset + 1) and kept sweeping
         _kafkaConsumer.Received(1).StoreOffset(Arg.Is<TopicPartitionOffset>(t =>
             t.Topic == TestDlqTopic && t.Partition.Value == 0 && t.Offset.Value == 4));
         await _messageHandler.Received(1)
@@ -489,7 +546,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_ConsumeException_NoRecordOffset_EndsBatchWithoutCommit()
+    public async Task Sweep_ConsumeException_NoRecordOffset_EndsSweepWithoutCommit()
     {
         using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
@@ -503,9 +560,9 @@ public class DlqConsumerTests : IDisposable
                 },
                 new Error(ErrorCode.UnknownTopicOrPart)));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
-        // No offset to skip past — the batch ends cleanly and retries on the next tick
+        // No offset to skip past — the sweep ends cleanly and retries on the next tick
         _kafkaConsumer.DidNotReceive().StoreOffset(Arg.Any<TopicPartitionOffset>());
         _kafkaConsumer.DidNotReceive().Commit();
         _kafkaConsumer.Received(1).Close();
@@ -516,39 +573,39 @@ public class DlqConsumerTests : IDisposable
     #region Invalid message skipping
 
     [Fact]
-    public async Task ProcessBatch_SkipsInvalidMessage_WithoutInvokingHandler()
+    public async Task Sweep_SkipsInvalidMessage_WithoutInvokingHandler()
     {
         using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(isInvalidMessage: true);
         SetupConsumeSequence(invalidMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ProcessBatch_InvalidMessage_CommitsOffset()
+    public async Task Sweep_InvalidMessage_CommitsOffset()
     {
         using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(isInvalidMessage: true);
         SetupConsumeSequence(invalidMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _kafkaConsumer.Received(1).StoreOffset(invalidMsg);
         _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
-    public async Task ProcessBatch_InvalidMessage_LogsWarning()
+    public async Task Sweep_InvalidMessage_LogsWarning()
     {
         using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(isInvalidMessage: true);
         SetupConsumeSequence(invalidMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _logger.Received().Log(
             LogLevel.Warning,
@@ -559,14 +616,14 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_ContinuesProcessingAfterInvalidMessage()
+    public async Task Sweep_ContinuesProcessingAfterInvalidMessage()
     {
         using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(key: "invalid-key", isInvalidMessage: true);
         var validMsg = CreateDlqConsumeResult(key: "valid-key");
         SetupConsumeSequence(invalidMsg, validMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.Received(1)
             .HandleMessageAsync(validMsg.Message.Value, Arg.Any<CancellationToken>());
@@ -578,39 +635,39 @@ public class DlqConsumerTests : IDisposable
     #region Max reprocess attempts exceeded
 
     [Fact]
-    public async Task ProcessBatch_SkipsMessageExceedingMaxReprocessAttempts()
+    public async Task Sweep_SkipsMessageExceedingMaxReprocessAttempts()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var exceededMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
         SetupConsumeSequence(exceededMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ProcessBatch_MaxReprocessExceeded_CommitsOffset()
+    public async Task Sweep_MaxReprocessExceeded_CommitsOffset()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var exceededMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
         SetupConsumeSequence(exceededMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _kafkaConsumer.Received(1).StoreOffset(exceededMsg);
         _kafkaConsumer.Received(1).Commit();
     }
 
     [Fact]
-    public async Task ProcessBatch_MaxReprocessExceeded_LogsWarning()
+    public async Task Sweep_MaxReprocessExceeded_LogsWarning()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var exceededMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
         SetupConsumeSequence(exceededMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _logger.Received().Log(
             LogLevel.Warning,
@@ -621,53 +678,53 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_MessageAtExactMaxAttempts_IsSkipped()
+    public async Task Sweep_MessageAtExactMaxAttempts_IsSkipped()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var atMaxMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
         SetupConsumeSequence(atMaxMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ProcessBatch_MessageBelowMaxAttempts_IsProcessed()
+    public async Task Sweep_MessageBelowMaxAttempts_IsProcessed()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var belowMaxMsg = CreateDlqConsumeResult(reprocessAttempt: 2);
         SetupConsumeSequence(belowMaxMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.Received(1)
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ProcessBatch_MessageAboveMaxAttempts_IsSkipped()
+    public async Task Sweep_MessageAboveMaxAttempts_IsSkipped()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var aboveMaxMsg = CreateDlqConsumeResult(reprocessAttempt: 4);
         SetupConsumeSequence(aboveMaxMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ProcessBatch_ContinuesProcessingAfterExceededMessage()
+    public async Task Sweep_ContinuesProcessingAfterExceededMessage()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var exceededMsg = CreateDlqConsumeResult(key: "exceeded-key", reprocessAttempt: 3);
         var validMsg = CreateDlqConsumeResult(key: "valid-key");
         SetupConsumeSequence(exceededMsg, validMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.Received(1)
             .HandleMessageAsync(validMsg.Message.Value, Arg.Any<CancellationToken>());
@@ -679,7 +736,7 @@ public class DlqConsumerTests : IDisposable
     #region Finish line - the sweep stops at the end of the log as it stood when it began
 
     [Fact]
-    public async Task ProcessBatch_StopsAtTheFinishLine()
+    public async Task Sweep_StopsAtTheFinishLine()
     {
         using var sut = CreateConsumer();
         SetFinishLine(highWatermark: 5);
@@ -687,7 +744,7 @@ public class DlqConsumerTests : IDisposable
         var appendedDuringSweep = CreateDlqConsumeResult(key: "re-enqueued", offset: 5);
         SetupConsumeSequence(appendedDuringSweep);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
@@ -695,7 +752,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_ProcessesEverythingBelowTheFinishLine()
+    public async Task Sweep_ProcessesEverythingBelowTheFinishLine()
     {
         using var sut = CreateConsumer();
         SetFinishLine(highWatermark: 3);
@@ -703,7 +760,7 @@ public class DlqConsumerTests : IDisposable
         var second = CreateDlqConsumeResult(key: "key-2", offset: 2);
         SetupConsumeSequence(first, second);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.Received(1).HandleMessageAsync(first.Message.Value, Arg.Any<CancellationToken>());
         await _messageHandler.Received(1).HandleMessageAsync(second.Message.Value, Arg.Any<CancellationToken>());
@@ -711,7 +768,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_ProcessesMessagesUpToTheFinishLineThenStops()
+    public async Task Sweep_ProcessesMessagesUpToTheFinishLineThenStops()
     {
         using var sut = CreateConsumer();
         SetFinishLine(highWatermark: 2);
@@ -719,7 +776,7 @@ public class DlqConsumerTests : IDisposable
         var atLine = CreateDlqConsumeResult(key: "key-2", offset: 2);
         SetupConsumeSequence(beforeLine, atLine);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.Received(1).HandleMessageAsync(beforeLine.Message.Value, Arg.Any<CancellationToken>());
         await _messageHandler.DidNotReceive().HandleMessageAsync(atLine.Message.Value, Arg.Any<CancellationToken>());
@@ -727,7 +784,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_SnapshotsTheFinishLineOnlyOnce()
+    public async Task Sweep_SnapshotsTheFinishLineOnlyOnce()
     {
         using var sut = CreateConsumer();
         SetFinishLine(highWatermark: 10);
@@ -736,7 +793,7 @@ public class DlqConsumerTests : IDisposable
             CreateDlqConsumeResult(key: "key-2", offset: 2),
             CreateDlqConsumeResult(key: "key-3", offset: 3));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // Re-reading the watermark mid-sweep would let the finish line drift ahead of this sweep's
         // own re-enqueues, which is exactly what the snapshot exists to prevent.
@@ -744,7 +801,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_BatchIdHeaderNoLongerStopsTheSweep()
+    public async Task Sweep_BatchIdHeaderNoLongerStopsTheSweep()
     {
         using var sut = CreateConsumer();
         SetFinishLine(highWatermark: 10);
@@ -752,14 +809,14 @@ public class DlqConsumerTests : IDisposable
         var stampedWithCurrentBatchId = CreateDlqConsumeResult(key: "looped-key", batchId: TestBatchId, offset: 1);
         SetupConsumeSequence(stampedWithCurrentBatchId);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.Received(1)
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ProcessBatch_OnePartitionReachingTheFinishLineDoesNotAbandonTheOthers()
+    public async Task Sweep_OnePartitionReachingTheFinishLineDoesNotAbandonTheOthers()
     {
         using var sut = CreateConsumer();
         SetFinishLine(highWatermark: 4, 0, 1);
@@ -767,7 +824,7 @@ public class DlqConsumerTests : IDisposable
         var stillPendingOnPartition1 = CreateDlqConsumeResult(key: "p1-work", offset: 2, partition: 1);
         SetupConsumeSequence(doneOnPartition0, stillPendingOnPartition1);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // The old batch-id guard broke out of the whole sweep here, stranding partition 1.
         await _messageHandler.Received(1)
@@ -777,7 +834,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_EndsOnceEveryPartitionHasReachedItsFinishLine()
+    public async Task Sweep_EndsOnceEveryPartitionHasReachedItsFinishLine()
     {
         using var sut = CreateConsumer();
         SetFinishLine(highWatermark: 3, 0, 1);
@@ -787,14 +844,14 @@ public class DlqConsumerTests : IDisposable
             CreateDlqConsumeResult(key: "p1-end", offset: 3, partition: 1),
             afterBothDone);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ProcessBatch_PartitionAssignedMidSweep_DoesNotStandInForAnUnfinishedOne()
+    public async Task Sweep_PartitionAssignedMidSweep_DoesNotStandInForAnUnfinishedOne()
     {
         using var sut = CreateConsumer();
         SetFinishLine(highWatermark: 4, 0, 1);
@@ -805,7 +862,7 @@ public class DlqConsumerTests : IDisposable
         var partition1Work = CreateDlqConsumeResult(key: "p1-work", offset: 1, partition: 1);
         SetupConsumeSequence(rebalancedIn, partition0Done, partition1Work);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // Counting paused partitions instead of checking the snapshot's membership would end the
         // sweep once partition 2 and partition 0 were paused, stranding partition 1's work.
@@ -814,13 +871,13 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_SkipsTheSweepWhenNoPartitionsAreAssigned()
+    public async Task Sweep_SkipsTheSweepWhenNoPartitionsAreAssigned()
     {
         using var sut = CreateConsumer();
         _kafkaConsumer.Assignment.Returns([]);
         SetupConsumeSequence(CreateDlqConsumeResult(key: "key-1", offset: 1));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // Without a finish line the sweep could reach its own re-enqueues, so it does nothing.
         await _messageHandler.DidNotReceive()
@@ -833,7 +890,7 @@ public class DlqConsumerTests : IDisposable
     #region In-place reprocessing - handler failure re-enqueues to DLQ
 
     [Fact]
-    public async Task ProcessBatch_HandlerFails_ReEnqueuesToDlqWithIncrementedAttempt()
+    public async Task Sweep_HandlerFails_ReEnqueuesToDlqWithIncrementedAttempt()
     {
         using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult(reprocessAttempt: 0);
@@ -841,9 +898,9 @@ public class DlqConsumerTests : IDisposable
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("transient failure"));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
-        // Re-enqueued to the DLQ topic (not the original topic) with attempt incremented to 1 and the current batch id
+        // Re-enqueued to the DLQ topic (not the original topic) with attempt incremented to 1 and the current sweep id
         await _producer.Received(1).ProduceAsync(
             TestDlqTopic,
             Arg.Is<Message<string, TestMessage>>(m =>
@@ -855,7 +912,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_HandlerFails_IncrementsAttemptFromPreviousValue()
+    public async Task Sweep_HandlerFails_IncrementsAttemptFromPreviousValue()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 5);
         var dlqMessage = CreateDlqConsumeResult(reprocessAttempt: 2);
@@ -863,7 +920,7 @@ public class DlqConsumerTests : IDisposable
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("transient failure"));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _producer.Received(1).ProduceAsync(
             TestDlqTopic,
@@ -873,7 +930,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_HandlerFails_ReEnqueueSucceeds_CommitsOffset()
+    public async Task Sweep_HandlerFails_ReEnqueueSucceeds_CommitsOffset()
     {
         using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
@@ -881,7 +938,7 @@ public class DlqConsumerTests : IDisposable
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("transient failure"));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // A successful re-enqueue means the original is safely parked, so its offset is committed
         _kafkaConsumer.Received(1).StoreOffset(dlqMessage);
@@ -889,7 +946,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_HandlerThrowsInvalidMessage_SkipsAndCommits()
+    public async Task Sweep_HandlerThrowsInvalidMessage_SkipsAndCommits()
     {
         using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
@@ -897,7 +954,7 @@ public class DlqConsumerTests : IDisposable
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidMessageException("permanent failure"));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // Permanent failure: skipped (committed), never re-enqueued
         _kafkaConsumer.Received(1).StoreOffset(dlqMessage);
@@ -907,7 +964,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_ReEnqueueProduceFails_StopsBatchWithoutCommitting()
+    public async Task Sweep_ReEnqueueProduceFails_StopsSweepWithoutCommitting()
     {
         using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
@@ -917,14 +974,14 @@ public class DlqConsumerTests : IDisposable
         _producer.ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, TestMessage>>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new KafkaException(new Error(ErrorCode.BrokerNotAvailable)));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _kafkaConsumer.DidNotReceive().StoreOffset(dlqMessage);
         _kafkaConsumer.DidNotReceive().Commit();
     }
 
     [Fact]
-    public async Task ProcessBatch_ReEnqueueProduceFails_LogsError()
+    public async Task Sweep_ReEnqueueProduceFails_LogsError()
     {
         using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
@@ -934,7 +991,7 @@ public class DlqConsumerTests : IDisposable
         _producer.ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, TestMessage>>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new KafkaException(new Error(ErrorCode.BrokerNotAvailable)));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _logger.Received().Log(
             LogLevel.Error,
@@ -945,7 +1002,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_ReEnqueueFailure_SecondMessageNotProcessed()
+    public async Task Sweep_ReEnqueueFailure_SecondMessageNotProcessed()
     {
         using var sut = CreateConsumer();
         var msg1 = CreateDlqConsumeResult(key: "key-fail");
@@ -957,9 +1014,9 @@ public class DlqConsumerTests : IDisposable
         _producer.ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, TestMessage>>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new KafkaException(new Error(ErrorCode.BrokerNotAvailable)));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
-        // Re-enqueue failure stops the batch, no offsets committed
+        // Re-enqueue failure stops the sweep, no offsets committed
         _kafkaConsumer.DidNotReceive().Commit();
     }
 
@@ -968,7 +1025,7 @@ public class DlqConsumerTests : IDisposable
     #region Cancellation handling
 
     [Fact]
-    public async Task ProcessBatch_StopsProcessingOnCancellation()
+    public async Task Sweep_StopsProcessingOnCancellation()
     {
         using var sut = CreateConsumer();
         var msg1 = CreateDlqConsumeResult(key: "key-1");
@@ -982,7 +1039,7 @@ public class DlqConsumerTests : IDisposable
             });
 
         await Assert.ThrowsAsync<OperationCanceledException>(
-            () => sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token));
+            () => sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token));
     }
 
     #endregion
@@ -990,7 +1047,7 @@ public class DlqConsumerTests : IDisposable
     #region Mixed scenarios
 
     [Fact]
-    public async Task ProcessBatch_MixedMessages_ProcessesCorrectly()
+    public async Task Sweep_MixedMessages_ProcessesCorrectly()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var invalidMsg = CreateDlqConsumeResult(key: "invalid", isInvalidMessage: true);
@@ -998,7 +1055,7 @@ public class DlqConsumerTests : IDisposable
         var validMsg = CreateDlqConsumeResult(key: "valid");
         SetupConsumeSequence(invalidMsg, exceededMsg, validMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // Only the valid message should be handled in place
         await _messageHandler.Received(1)
@@ -1008,7 +1065,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_ReEnqueueFailsAfterSkippedMessages_StopsBatchCorrectly()
+    public async Task Sweep_ReEnqueueFailsAfterSkippedMessages_StopsSweepCorrectly()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var invalidMsg = CreateDlqConsumeResult(key: "invalid", isInvalidMessage: true);
@@ -1021,16 +1078,16 @@ public class DlqConsumerTests : IDisposable
         _producer.ProduceAsync(Arg.Any<string>(), Arg.Any<Message<string, TestMessage>>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new KafkaException(new Error(ErrorCode.BrokerNotAvailable)));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
-        // Invalid message committed, but fail message stops the batch without committing
+        // Invalid message committed, but fail message stops the sweep without committing
         _kafkaConsumer.Received(1).StoreOffset(invalidMsg);
         _kafkaConsumer.DidNotReceive().StoreOffset(failMsg);
         _kafkaConsumer.DidNotReceive().StoreOffset(afterFailMsg);
     }
 
     [Fact]
-    public async Task ProcessBatch_SkippedMessagesBeforeTheFinishLine_AllCommitted()
+    public async Task Sweep_SkippedMessagesBeforeTheFinishLine_AllCommitted()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 2);
         SetFinishLine(highWatermark: 2);
@@ -1038,7 +1095,7 @@ public class DlqConsumerTests : IDisposable
         var pastFinishLine = CreateDlqConsumeResult(key: "re-enqueued", offset: 2);
         SetupConsumeSequence(exceededMsg, pastFinishLine);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // The exceeded message is skipped but committed; the record at the finish line ends the
         // sweep without being committed, so the next tick picks it up.
@@ -1049,13 +1106,13 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_EmptyBatch_NoProcessingOrCommits()
+    public async Task Sweep_EmptyTopic_NoProcessingOrCommits()
     {
         using var sut = CreateConsumer();
         _kafkaConsumer.Consume(Arg.Any<TimeSpan>())
             .Returns((ConsumeResult<string, TestMessage>)null!);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _messageHandler.DidNotReceive()
             .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
@@ -1064,14 +1121,14 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_AllMessagesSkipped_AllOffsetsCommitted()
+    public async Task Sweep_AllMessagesSkipped_AllOffsetsCommitted()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 1);
         var invalidMsg = CreateDlqConsumeResult(key: "invalid-1", isInvalidMessage: true);
         var exceededMsg = CreateDlqConsumeResult(key: "exceeded-1", reprocessAttempt: 1);
         SetupConsumeSequence(invalidMsg, exceededMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // All skipped messages should have offsets committed
         _kafkaConsumer.Received(2).Commit();
@@ -1085,17 +1142,17 @@ public class DlqConsumerTests : IDisposable
 
     /// <summary>
     /// Waits for ExecuteAsync to park on Task.Delay, advances the fake clock,
-    /// then waits for the batch to complete.
+    /// then waits for the sweep to complete.
     /// </summary>
     private static async Task AdvanceTimeAndYieldAsync(FakeTimeProvider fakeTime, TimeSpan duration)
     {
         await Task.Delay(50);  // Let ExecuteAsync reach Task.Delay
         fakeTime.Advance(duration);
-        await Task.Delay(50);  // Let batch processing complete
+        await Task.Delay(50);  // Let the sweep complete
     }
 
     [Fact]
-    public async Task ExecuteAsync_DoesNotProcessBatchBeforeTimerInterval()
+    public async Task ExecuteAsync_DoesNotSweepBeforeTimerInterval()
     {
         var fakeTime = new FakeTimeProvider();
         using var sut = CreateConsumer(timeProvider: fakeTime);
@@ -1109,7 +1166,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ExecuteAsync_ProcessesBatchAfterTimerInterval()
+    public async Task ExecuteAsync_SweepsAfterTimerInterval()
     {
         var fakeTime = new FakeTimeProvider();
         using var sut = CreateConsumer(timeProvider: fakeTime);
@@ -1124,7 +1181,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ExecuteAsync_ProcessesMultipleBatchesOnMultipleTicks()
+    public async Task ExecuteAsync_SweepsOnEveryTick()
     {
         var fakeTime = new FakeTimeProvider();
         using var sut = CreateConsumer(timeProvider: fakeTime);
@@ -1178,7 +1235,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ExecuteAsync_LogsCriticalOnBatchError()
+    public async Task ExecuteAsync_LogsCriticalOnSweepError()
     {
         var fakeTime = new FakeTimeProvider();
         using var sut = CreateConsumer(timeProvider: fakeTime);
@@ -1191,7 +1248,7 @@ public class DlqConsumerTests : IDisposable
         _logger.Received().Log(
             LogLevel.Critical,
             Arg.Any<EventId>(),
-            Arg.Is<object>(o => o.ToString()!.Contains("Error processing dead letter queue batch")),
+            Arg.Is<object>(o => o.ToString()!.Contains("Error during the dead letter queue sweep")),
             Arg.Any<Exception?>(),
             Arg.Any<Func<object, Exception?, string>>());
 
@@ -1199,7 +1256,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task Trigger_WakesConsumerAndRunsBatch_WithoutAdvancingClock()
+    public async Task Trigger_WakesConsumerAndRunsSweep_WithoutAdvancingClock()
     {
         var fakeTime = new FakeTimeProvider();
         using var sut = CreateConsumer(timeProvider: fakeTime);
@@ -1209,16 +1266,16 @@ public class DlqConsumerTests : IDisposable
         await Task.Delay(50); // Let ExecuteAsync reach the wait
 
         _reprocessSignal.Trigger();
-        await Task.Delay(100); // Let the triggered batch run
+        await Task.Delay(100); // Let the triggered sweep run
 
-        // A batch ran even though the fake clock never advanced
+        // A sweep ran even though the fake clock never advanced
         _kafkaConsumer.Received(1).Subscribe(TestDlqTopic);
 
         await sut.StopAsync(CancellationToken.None);
     }
 
     [Fact]
-    public async Task Trigger_RepeatedCallsBeforeBatch_CoalesceIntoOneBatch()
+    public async Task Trigger_RepeatedCallsBeforeSweep_CoalesceIntoOneSweep()
     {
         var fakeTime = new FakeTimeProvider();
         using var sut = CreateConsumer(timeProvider: fakeTime);
@@ -1238,7 +1295,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task Trigger_AfterTimerTick_RunsImmediateSecondBatch()
+    public async Task Trigger_AfterTimerTick_RunsImmediateSecondSweep()
     {
         var fakeTime = new FakeTimeProvider();
         using var sut = CreateConsumer(timeProvider: fakeTime);
@@ -1251,7 +1308,7 @@ public class DlqConsumerTests : IDisposable
         _reprocessSignal.Trigger();
         await Task.Delay(100);
 
-        // The trigger produced a second batch without waiting another interval
+        // The trigger produced a second sweep without waiting another interval
         _kafkaConsumer.Received(2).Subscribe(TestDlqTopic);
 
         await sut.StopAsync(CancellationToken.None);
@@ -1267,7 +1324,7 @@ public class DlqConsumerTests : IDisposable
         await sut.StartAsync(_cts.Token);
         await Task.Delay(50);
 
-        // Triggered batch, then a normal timer tick afterwards
+        // Triggered sweep, then a normal timer tick afterwards
         _reprocessSignal.Trigger();
         await Task.Delay(100);
         await AdvanceTimeAndYieldAsync(fakeTime, TimeSpan.FromMinutes(60));
@@ -1298,13 +1355,13 @@ public class DlqConsumerTests : IDisposable
     #region Terminal failure sink
 
     [Fact]
-    public async Task ProcessBatch_InvalidHeaderSkip_NotifiesTerminalSink()
+    public async Task Sweep_InvalidHeaderSkip_NotifiesTerminalSink()
     {
         using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(isInvalidMessage: true, reprocessAttempt: 2);
         SetupConsumeSequence(invalidMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _terminalSink.Received(1).HandleAsync(
             Arg.Is<TerminalFailure<TestMessage>>(f =>
@@ -1316,13 +1373,13 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_MaxAttemptsSkip_NotifiesTerminalSink()
+    public async Task Sweep_MaxAttemptsSkip_NotifiesTerminalSink()
     {
         using var sut = CreateConsumer(maxReprocessAttempts: 3);
         var exceededMsg = CreateDlqConsumeResult(reprocessAttempt: 3);
         SetupConsumeSequence(exceededMsg);
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _terminalSink.Received(1).HandleAsync(
             Arg.Is<TerminalFailure<TestMessage>>(f =>
@@ -1333,7 +1390,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_InvalidDuringReprocess_NotifiesTerminalSinkWithError()
+    public async Task Sweep_InvalidDuringReprocess_NotifiesTerminalSinkWithError()
     {
         using var sut = CreateConsumer();
         var dlqMessage = CreateDlqConsumeResult();
@@ -1341,7 +1398,7 @@ public class DlqConsumerTests : IDisposable
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidMessageException("schema drift"));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _terminalSink.Received(1).HandleAsync(
             Arg.Is<TerminalFailure<TestMessage>>(f =>
@@ -1351,26 +1408,26 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_SuccessfulReprocess_DoesNotNotifySink()
+    public async Task Sweep_SuccessfulReprocess_DoesNotNotifySink()
     {
         using var sut = CreateConsumer();
         SetupConsumeSequence(CreateDlqConsumeResult());
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         await _terminalSink.DidNotReceive()
             .HandleAsync(Arg.Any<TerminalFailure<TestMessage>>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task ProcessBatch_FailedReprocess_ReEnqueued_DoesNotNotifySink()
+    public async Task Sweep_FailedReprocess_ReEnqueued_DoesNotNotifySink()
     {
         using var sut = CreateConsumer();
         SetupConsumeSequence(CreateDlqConsumeResult(reprocessAttempt: 1));
         _messageHandler.HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("still failing"));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // Re-enqueued for a future tick — not terminal yet
         await _terminalSink.DidNotReceive()
@@ -1378,7 +1435,7 @@ public class DlqConsumerTests : IDisposable
     }
 
     [Fact]
-    public async Task ProcessBatch_TerminalSinkThrows_StillCommitsAndContinues()
+    public async Task Sweep_TerminalSinkThrows_StillCommitsAndContinues()
     {
         using var sut = CreateConsumer();
         var invalidMsg = CreateDlqConsumeResult(key: "invalid", isInvalidMessage: true);
@@ -1387,7 +1444,7 @@ public class DlqConsumerTests : IDisposable
         _terminalSink.HandleAsync(Arg.Any<TerminalFailure<TestMessage>>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("sink db down"));
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         _kafkaConsumer.Received(1).StoreOffset(invalidMsg);
         await _messageHandler.Received(1)
@@ -1405,7 +1462,7 @@ public class DlqConsumerTests : IDisposable
     #region Captured raw poison records
 
     [Fact]
-    public async Task ProcessBatch_CapturedPoisonRecord_SkipsQuietly_WithoutCriticalLog()
+    public async Task Sweep_CapturedPoisonRecord_SkipsQuietly_WithoutCriticalLog()
     {
         using var sut = CreateConsumer();
         var callIndex = 0;
@@ -1417,7 +1474,7 @@ public class DlqConsumerTests : IDisposable
                 return null!;
             });
 
-        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
 
         // Committed past like any poison record, but without the Critical alarm
         _kafkaConsumer.Received(1).StoreOffset(Arg.Is<TopicPartitionOffset>(t => t.Offset.Value == 4));

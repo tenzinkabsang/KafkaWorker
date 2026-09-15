@@ -5,7 +5,7 @@ namespace KafkaWorker;
 /// <summary>
 /// Channel-backed implementation of <see cref="IDlqReprocessTrigger{TMessage}"/>.
 /// A bounded channel of capacity 1 with <see cref="BoundedChannelFullMode.DropWrite"/>
-/// coalesces concurrent or repeated triggers into a single pending batch.
+/// coalesces concurrent or repeated triggers into a single pending sweep.
 /// </summary>
 internal sealed class DlqReprocessSignal<TMessage> : IDlqReprocessTrigger<TMessage> where TMessage : class
 {

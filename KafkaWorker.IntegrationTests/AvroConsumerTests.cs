@@ -169,6 +169,6 @@ public class AvroConsumerTests(ITestOutputHelper testOutputHelper)
         Assert.True(logProvider.HasLogged("Message sent to dead letter topic"));
         Assert.True(logProvider.HasLogged("Subscribed to dead letter topic"));
         Assert.True(logProvider.HasLogged("Skipping invalid message"));
-        Assert.True(logProvider.HasLogged("Finished processing dead letter queue batch"));
+        Assert.True(logProvider.HasLogged("Finished the dead letter queue sweep"));
     }
 }
