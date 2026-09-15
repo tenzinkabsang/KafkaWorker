@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   EOF would have been wrong, since EOF tracks the *current* end of the log and so includes the
   sweep's own re-enqueues.
 
+### Fixed
+
+- A failed offset commit no longer ends the DLQ sweep. Every commit in the sweep was unguarded, so a
+  rebalance revoking a partition mid-sweep — an ordinary event — surfaced as a `Critical` log and
+  abandoned the partitions that were still draining. Commit failures are now logged at `Error` and
+  the sweep continues; the affected messages are simply re-read on the next tick, which in-place
+  reprocessing is already required to tolerate. This matches how the batch consumer has handled
+  commit failures since 2.5.0.
+
 ## [2.5.0] - 2026-09-13
 
 ### Added

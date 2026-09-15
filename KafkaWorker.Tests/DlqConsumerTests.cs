@@ -372,6 +372,63 @@ public class DlqConsumerTests : IDisposable
 
     #endregion
 
+    #region Commit failures - routine, not fatal to the sweep
+
+    [Fact]
+    public async Task ProcessBatch_SurvivesACommitFailureAndKeepsSweeping()
+    {
+        using var sut = CreateConsumer();
+        SetupConsumeSequence(
+            CreateDlqConsumeResult(key: "first", offset: 1),
+            CreateDlqConsumeResult(key: "second", offset: 2));
+        _kafkaConsumer.When(c => c.Commit()).Throw(new KafkaException(ErrorCode.RebalanceInProgress));
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        // A rebalance that rejects the commit is routine: the next tick re-reads whatever was not
+        // committed. It must not abandon the partitions still draining in this sweep.
+        await _messageHandler.Received(2)
+            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
+        _logger.Received().Log(
+            LogLevel.Error,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(o => o.ToString()!.Contains("Failed to commit offsets")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+        _logger.DidNotReceive().Log(
+            LogLevel.Critical,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task ProcessBatch_TreatsNothingToCommitAsRoutine()
+    {
+        using var sut = CreateConsumer();
+        SetupConsumeSequence(CreateDlqConsumeResult());
+        _kafkaConsumer.When(c => c.Commit()).Throw(new KafkaException(ErrorCode.Local_NoOffset));
+
+        await sut.ProcessDeadLetterQueueBatchAsync(TestBatchId, _cts.Token);
+
+        // Having nothing stored to commit is not a failure and must not be reported as one.
+        _logger.DidNotReceive().Log(
+            LogLevel.Error,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+        _logger.DidNotReceive().Log(
+            LogLevel.Critical,
+            Arg.Any<EventId>(),
+            Arg.Any<object>(),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    #endregion
+
     #region Null / EOF message handling - stops batch
 
     [Fact]

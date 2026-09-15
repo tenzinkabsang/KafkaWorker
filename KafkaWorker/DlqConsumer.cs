@@ -163,7 +163,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
                     // StoreOffset(TopicPartitionOffset) stores the given offset verbatim, so +1 to move past the failed record.
                     consumer.StoreOffset(new TopicPartitionOffset(record.TopicPartition, record.Offset + 1));
-                    consumer.Commit();
+                    CommitStoredOffsets(consumer);
                     continue;
                 }
 
@@ -212,7 +212,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                     // batch end would leave the offset behind it and wedge the DLQ forever.
                     LogDlqTombstoneSkipped(logger, DeadLetterTopic, consumeResult.Partition.Value, consumeResult.Offset.Value);
                     consumer.StoreOffset(consumeResult);
-                    consumer.Commit();
+                    CommitStoredOffsets(consumer);
                     continue;
                 }
 
@@ -225,7 +225,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                 }
 
                 consumer.StoreOffset(consumeResult);
-                consumer.Commit();
+                CommitStoredOffsets(consumer);
             }
 
             LogFinishedBatch(logger, DeadLetterTopic);
@@ -241,6 +241,31 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
         finally
         {
             consumer.Close();
+        }
+    }
+
+    /// <summary>
+    /// Commits the stored offset, tolerating the commit failures that are routine rather than fatal.
+    /// </summary>
+    /// <remarks>
+    /// A rebalance mid-sweep revokes the partition and the commit is rejected. That is ordinary: the
+    /// next tick re-reads whatever was not committed, and in-place reprocessing is required to be
+    /// idempotent anyway. Letting it reach the sweep's catch-all would log a routine event at
+    /// Critical and abandon the partitions that are still draining.
+    /// </remarks>
+    private void CommitStoredOffsets(IConsumer<TKey, TMessage> consumer)
+    {
+        try
+        {
+            consumer.Commit();
+        }
+        catch (KafkaException ex) when (ex.Error.Code == ErrorCode.Local_NoOffset)
+        {
+            // Nothing stored to commit - not an error.
+        }
+        catch (KafkaException ex)
+        {
+            LogDlqCommitFailed(logger, ex, DeadLetterTopic);
         }
     }
 
@@ -537,6 +562,9 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
 
     [LoggerMessage(EventId = 225, Level = LogLevel.Debug, Message = "Reached the finish line for {DeadLetterTopic} partition {Partition} at offset {Offset}; pausing it for the rest of this sweep")]
     private static partial void LogPartitionFinished(ILogger logger, string? deadLetterTopic, int partition, long offset);
+
+    [LoggerMessage(EventId = 227, Level = LogLevel.Error, Message = "Failed to commit offsets during the dead letter queue sweep of {DeadLetterTopic}. The affected messages are re-read on the next tick.")]
+    private static partial void LogDlqCommitFailed(ILogger logger, Exception ex, string? deadLetterTopic);
 
     [LoggerMessage(EventId = 226, Level = LogLevel.Warning, Message = "No partitions assigned when starting the sweep of {DeadLetterTopic}; skipping this tick")]
     private static partial void LogNoFinishLine(ILogger logger, string? deadLetterTopic);
