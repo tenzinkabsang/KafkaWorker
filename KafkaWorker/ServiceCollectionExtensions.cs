@@ -167,6 +167,11 @@ public static class ServiceCollectionExtensions
     /// </list>
     /// </para>
     /// <para>
+    /// Two services are registered for use elsewhere in the application:
+    /// <see cref="IDlqReprocessTrigger{TMessage}"/> to run a sweep immediately, and
+    /// <see cref="IDlqInspector{TMessage}"/> to read the dead letter topic without consuming it.
+    /// </para>
+    /// <para>
     /// This method must be called after the main consumer registration (<c>AddKafkaWorker</c>), as it
     /// depends on <see cref="KafkaWorkerConfig"/> being configured and requires an
     /// <see cref="IMessageHandler{TMessage}"/> to be registered for reprocessing. Registration throws if
@@ -221,6 +226,8 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IDlqConsumerFactory<TKey, TMessage>, DlqConsumerFactory<TKey, TMessage>>();
         services.TryAddSingleton<DlqReprocessSignal<TMessage>>();
         services.TryAddSingleton<IDlqReprocessTrigger<TMessage>>(sp => sp.GetRequiredService<DlqReprocessSignal<TMessage>>());
+        services.TryAddSingleton<IDlqInspectorClientFactory<TKey, TMessage>, DlqInspectorClientFactory<TKey, TMessage>>();
+        services.TryAddSingleton<IDlqInspector<TMessage>, DlqInspector<TKey, TMessage>>();
         services.AddHostedService<DlqConsumer<TKey, TMessage>>();
 
         return services;

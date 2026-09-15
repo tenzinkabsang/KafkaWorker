@@ -241,6 +241,85 @@ A message that reaches the DLQ successfully does *not* fire the sink until it la
 
 ---
 
+## Inspecting the DLQ
+
+`IDlqInspector<TMessage>` reads the dead letter topic **without consuming it** — no offset is stored and nothing is committed, so inspecting never changes what the next sweep will reprocess. It is registered automatically by `AddKafkaWorkerDeadLetter`, alongside the reprocess trigger.
+
+Both methods cover **every partition** of the dead letter topic. Partitions come from broker metadata rather than from this process's consumer assignment, so any replica gives a complete answer however the DLQ consumer group happens to be balanced.
+
+### How much is waiting
+
+`GetDepthAsync()` reads offsets and metadata only — nothing is fetched or deserialized — so it is the right thing to alert on:
+
+```csharp
+var depth = await inspector.GetDepthAsync(ct);
+
+depth.Pending;      // records the next sweep will read, across the whole topic
+depth.IsEmpty;      // nothing waiting
+depth.Partitions;   // per partition: Low, High, ResumesAt, Pending
+```
+
+A health check is the usual home for it:
+
+```csharp
+public sealed class DlqHealthCheck(IDlqInspector<OrderMessage> inspector) : IHealthCheck
+{
+    public async Task<HealthCheckResult> CheckHealthAsync(
+        HealthCheckContext context, CancellationToken cancellationToken = default)
+    {
+        var depth = await inspector.GetDepthAsync(cancellationToken);
+
+        return depth.Pending < 100
+            ? HealthCheckResult.Healthy($"{depth.Pending} messages pending reprocessing")
+            : HealthCheckResult.Degraded($"{depth.Pending} messages backed up in {depth.Topic}");
+    }
+}
+```
+
+{: .note }
+> Every call talks to the broker. Cache the result rather than calling it from a liveness probe on a short interval.
+
+### What is in there
+
+`PeekAsync()` reads entries starting where the next sweep would, with each record's tracking headers already interpreted:
+
+```csharp
+var entries = await inspector.PeekAsync(new DlqPeekOptions { MaxMessages = 100 }, ct);
+
+foreach (var entry in entries)
+{
+    Console.WriteLine(
+        $"p{entry.Partition}@{entry.Offset} {entry.State} " +
+        $"attempt {entry.ReprocessAttempts}/{entry.ReprocessAttempts + entry.RemainingAttempts} " +
+        $"{entry.Error}");
+}
+```
+
+`DlqEntry.State` answers the question a generic topic browser cannot — whether a message is still on its way back or is stuck where it is:
+
+| State | Meaning |
+| --- | --- |
+| `Retryable` | Will be reprocessed on the next sweep |
+| `Invalid` | Carries `invalid-message`; skipped on every sweep, forever |
+| `AttemptsExhausted` | Used up `DeadLetterMaxReprocessAttempts`; skipped from here on |
+| `Undeserializable` | Raw bytes the consumer cannot read; awaits a manual [redrive](#redrive) |
+| `Tombstone` | Null-valued record; committed past rather than reprocessed |
+
+A record that fails to deserialize is reported as an entry rather than thrown — surfacing what you cannot read is the point. To page deeper into a single partition, pass `Partition` and `FromOffset` together (an offset without a partition is rejected):
+
+```csharp
+await inspector.PeekAsync(new DlqPeekOptions { Partition = 1, FromOffset = 1500, MaxMessages = 20 }, ct);
+```
+
+### What it deliberately does not do
+
+The inspector is read-only. There is no delete, no edit-and-replay, and no "reprocess just this one message" — the only action is [`Trigger()`](#on-demand-reprocessing), which runs a normal sweep. As with the trigger, the library ships the injectable service and not an endpoint, so the inspector inherits whatever authorization you already have.
+
+{: .important }
+> `PeekAsync` returns deserialized message values — the contents of real failed messages. `GetDepthAsync` returns only counts and is safe to expose more widely.
+
+---
+
 ## On-Demand Reprocessing
 
 The DLQ consumer normally waits for its configured interval between sweeps. When you want failed messages retried *right now* — say, a downstream API was down, messages piled into the DLQ, and the API has just been fixed — inject `IDlqReprocessTrigger<TMessage>` (registered automatically by `AddKafkaWorkerDeadLetter`) and call `Trigger()`:
@@ -277,7 +356,14 @@ Alert on the skip metric — it fires exactly when a message becomes terminal:
 
 ### Inspect
 
-Terminal messages sit in the DLQ topic behind the committed offset. Browse the topic with any Kafka tool (kafka-ui, `kcat`, Conduktor) and identify them by their headers: `invalid-message: true`, or `reprocessed-attempt` ≥ your configured max, plus `error-message` and `original-topic` for diagnosis.
+Terminal messages sit in the DLQ topic behind the committed offset. [`IDlqInspector<TMessage>`](#inspecting-the-dlq) identifies them for you — they come back with `State` of `Invalid` or `AttemptsExhausted`, alongside `Error` and `SourceTopic`:
+
+```csharp
+var terminal = (await inspector.PeekAsync(new DlqPeekOptions { MaxMessages = 500 }, ct))
+    .Where(e => e.State is DlqEntryState.Invalid or DlqEntryState.AttemptsExhausted);
+```
+
+Any Kafka tool (kafka-ui, `kcat`, Conduktor) works too, reading the same headers by hand: `invalid-message: true`, or `reprocessed-attempt` ≥ your configured max, plus `error-message` and `original-topic` for diagnosis.
 
 {: .note }
 > **Size DLQ retention generously** (days to weeks) — the DLQ topic doubles as your terminal-failure archive. Once retention expires, those messages are gone.

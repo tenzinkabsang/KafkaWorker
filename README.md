@@ -37,6 +37,7 @@ dotnet add package KafkaWorker.JsonSchema     # for JSON + Schema Registry
 - **Dead letter queue support** *(optional)* — Failed messages are sent to a DLQ. Leave `DeadLetterTopic` null to disable
 - **Periodic DLQ reprocessing** *(optional)* — Register `AddKafkaWorkerDeadLetter` to automatically retry failed messages on a schedule. Messages are reprocessed **in place** (via your handler) so they never return to the original topic
 - **On-demand DLQ reprocessing** — Inject `IDlqReprocessTrigger<TMessage>` and call `Trigger()` to run a reprocessing sweep immediately (e.g., right after a downstream outage is fixed) instead of waiting for the next tick
+- **DLQ inspection** — Inject `IDlqInspector<TMessage>` to read the dead letter topic without consuming it: how much is waiting, and whether each message will be retried or is stuck
 - **Invalid message handling** — Skip retries for messages that will never succeed via `InvalidMessageException`
 - **Poison-message capture** — A message that fails deserialization can't crash the host or wedge the DLQ: its raw bytes are captured to the DLQ for manual inspection and redrive, and the consumer moves on
 - **Terminal failure sink** *(optional)* — Implement `ITerminalFailureSink<TMessage>` to persist permanently failed messages somewhere durable and queryable (e.g. a database table) at the exact moment the library gives up on them

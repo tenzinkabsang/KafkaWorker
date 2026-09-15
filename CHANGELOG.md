@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`IDlqInspector<TMessage>` reads the dead letter topic without consuming it.** Registered
+  automatically by `AddKafkaWorkerDeadLetter` alongside `IDlqReprocessTrigger<TMessage>`, so there is
+  nothing new to register and no new configuration.
+
+  `GetDepthAsync()` reports how much is waiting per partition and in total, reading offsets and
+  metadata only - nothing is fetched or deserialized - which makes it cheap enough to drive a health
+  check or an alert. `PeekAsync()` reads entries starting where the next sweep would, with each
+  record's tracking headers already interpreted into a `DlqEntryState`: `Retryable`, `Invalid`,
+  `AttemptsExhausted`, `Undeserializable` or `Tombstone`. That state is the thing a generic Kafka
+  topic browser cannot tell you - whether a message is still on its way back or is stuck where it is.
+
+  Both methods cover every partition of the dead letter topic, taken from broker metadata rather than
+  from the calling process's consumer assignment, so any replica gives a complete answer however the
+  DLQ consumer group happens to be balanced.
+
+  Reading is isolated from the sweep by construction: partitions are assigned manually rather than
+  subscribed, which keeps the inspector out of the consumer group's rebalance protocol, and nothing
+  is ever stored or committed. A record that fails to deserialize is reported as an entry rather than
+  thrown - surfacing what cannot be read is the point.
+
+  The inspector is read-only: no delete, no edit-and-replay, no per-message reprocess. `Trigger()`
+  remains the only action, and the library ships an injectable service rather than an endpoint, so
+  the inspector inherits whatever authorization the application already has. Note that `PeekAsync`
+  returns deserialized message values, while `GetDepthAsync` returns only counts.
+
 ### Changed
 
 - **The DLQ sweep now terminates on a high-watermark snapshot instead of the `batch-id` header.**
