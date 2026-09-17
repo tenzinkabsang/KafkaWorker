@@ -7,7 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`IDlqInspector<TMessage>` reads the dead letter topic without consuming it.** Registered
+  automatically by `AddKafkaWorkerDeadLetter` alongside `IDlqReprocessTrigger<TMessage>`, so there is
+  nothing new to register and no new configuration.
+
+  `GetDepthAsync()` reports how much is waiting per partition and in total, reading offsets and
+  metadata only - nothing is fetched or deserialized - which makes it cheap enough to drive a health
+  check or an alert. `PeekAsync()` reads entries starting where the next sweep would, with each
+  record's tracking headers already interpreted into a `DlqEntryState`: `Retryable`, `Invalid`,
+  `AttemptsExhausted`, `Undeserializable` or `Tombstone`. That state is the thing a generic Kafka
+  topic browser cannot tell you - whether a message is still on its way back or is stuck where it is.
+
+  Both methods cover every partition of the dead letter topic, taken from broker metadata rather than
+  from the calling process's consumer assignment, so any replica gives a complete answer however the
+  DLQ consumer group happens to be balanced.
+
+  Reading is isolated from the sweep by construction: partitions are assigned manually rather than
+  subscribed, which keeps the inspector out of the consumer group's rebalance protocol, and nothing
+  is ever stored or committed. A record that fails to deserialize is reported as an entry rather than
+  thrown - surfacing what cannot be read is the point.
+
+  The inspector is read-only: no delete, no edit-and-replay, no per-message reprocess. `Trigger()`
+  remains the only action, and the library ships an injectable service rather than an endpoint, so
+  the inspector inherits whatever authorization the application already has. Note that `PeekAsync`
+  returns deserialized message values, while `GetDepthAsync` returns only counts.
+
+### Fixed
+
+- **A captured poison record is no longer reprocessed when its raw bytes happen to deserialize.**
+  The `deserialization-failed` header means the main consumer could not read the record and
+  captured its bytes for manual redrive, and the sweep skipped it on exactly that basis - but only
+  from the `ConsumeException` path, which is reached only when the DLQ consumer *also* fails to
+  deserialize it. A record whose bytes did deserialize here (a transient Schema Registry failure on
+  the original consume, say) slipped past the check and was handed to the handler. The sweep now
+  honours the header whether or not the value reads, matching what the header has always
+  documented and what `IDlqInspector` already reported.
+
 ### Changed
+
+- **The sweep and `IDlqInspector` now share one classifier.** The rules that decide what happens to
+  a dead letter record - tombstone, captured poison, invalid, attempts exhausted, retryable - lived
+  in both the sweep and the inspector as independent copies. They agreed, but nothing held them
+  together, and a drift would not have failed loudly: the inspector would simply have told an
+  operator a message was on its way back when the sweep was going to skip it. Both now read from
+  `DlqRecordClassifier`, so sweep behaviour and what `DlqEntryState` reports cannot diverge. No
+  public API changed.
 
 - **The DLQ sweep now terminates on a high-watermark snapshot instead of the `batch-id` header.**
   Because the DLQ consumer appends to the very topic it is draining, the end of the log runs away

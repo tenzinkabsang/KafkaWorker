@@ -149,7 +149,7 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                     // offset and wedge the DLQ permanently. Skip it and commit past it. Records the
                     // main consumer captured as raw bytes (deserialization-failed header) are
                     // expected to be undeserializable — they await manual redrive, so skip quietly.
-                    if (string.Equals(record.Message?.Headers.GetValue(KafkaHeaders.DeserializationFailed), "true", StringComparison.OrdinalIgnoreCase))
+                    if (DlqRecordClassifier.IsCapturedPoison(record.Message?.Headers))
                     {
                         LogCapturedPoisonSkipped(logger, DeadLetterTopic, record.Partition.Value, record.Offset.Value);
                     }
@@ -207,7 +207,17 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                     continue;
                 }
 
-                if (consumeResult.Message?.Value == null)
+                // One classification drives every skip decision from here on. The rules live in
+                // DlqRecordClassifier so this sweep and IDlqInspector cannot drift apart.
+                var message = consumeResult.Message;
+                var state = DlqRecordClassifier.Classify(
+                    message?.Value is not null,
+                    message?.Headers,
+                    MaxReprocessAttempts);
+
+                // A null message classifies as a tombstone already; naming it here as well is what
+                // tells the compiler the record is non-null for the rest of the loop.
+                if (message is null || state == DlqEntryState.Tombstone)
                 {
                     // Tombstone (null value): commit past it and keep processing — treating it as
                     // the end of the sweep would leave the offset behind it and wedge the DLQ forever.
@@ -217,11 +227,11 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
                     continue;
                 }
 
-                var success = await HandleMessageAsync(consumeResult, batchId, stoppingToken);
+                var success = await HandleMessageAsync(consumeResult, state, batchId, stoppingToken);
 
                 if (!success)
                 {
-                    LogSweepStopping(logger, consumeResult.Message.Key);
+                    LogSweepStopping(logger, message.Key);
                     break;
                 }
 
@@ -356,24 +366,34 @@ internal sealed partial class DlqConsumer<TKey, TMessage>(
     /// </remarks>
     private async Task<bool> HandleMessageAsync(
         ConsumeResult<TKey, TMessage> consumeResult,
+        DlqEntryState state,
         string batchId,
         CancellationToken stoppingToken)
     {
-        // Invalid messages should not be reprocessed - they will always fail
-        if (consumeResult.Message.Headers.IsInvalidMessage())
+        switch (state)
         {
-            LogSkippingInvalidMessage(logger, consumeResult.Message.Key);
-            metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "invalid"));
-            await NotifyTerminalFailureAsync(consumeResult, TerminalFailureReason.InvalidMessage, error: null, stoppingToken);
-            return true;
-        }
+            // Invalid messages should not be reprocessed - they will always fail
+            case DlqEntryState.Invalid:
+                LogSkippingInvalidMessage(logger, consumeResult.Message.Key);
+                metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "invalid"));
+                await NotifyTerminalFailureAsync(consumeResult, TerminalFailureReason.InvalidMessage, error: null, stoppingToken);
+                return true;
 
-        if (consumeResult.Message.Headers.GetReprocessAttemptCount() >= MaxReprocessAttempts)
-        {
-            LogExceededMaxReprocessAttempts(logger, MaxReprocessAttempts, consumeResult.Message.Key);
-            metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "max_attempts"));
-            await NotifyTerminalFailureAsync(consumeResult, TerminalFailureReason.MaxReprocessAttemptsExceeded, error: null, stoppingToken);
-            return true;
+            case DlqEntryState.AttemptsExhausted:
+                LogExceededMaxReprocessAttempts(logger, MaxReprocessAttempts, consumeResult.Message.Key);
+                metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "max_attempts"));
+                await NotifyTerminalFailureAsync(consumeResult, TerminalFailureReason.MaxReprocessAttemptsExceeded, error: null, stoppingToken);
+                return true;
+
+            // Raw bytes captured from a failed deserialization that happen to deserialize here
+            // anyway. The header means the record awaits manual redrive, so honour it rather than
+            // handing the handler a message the main consumer could not read. Matches the quiet
+            // skip the ConsumeException path above gives the records that do not deserialize, and
+            // like that path notifies no sink: a captured poison record never fires the typed one.
+            case DlqEntryState.Undeserializable:
+                LogCapturedPoisonSkipped(logger, DeadLetterTopic, consumeResult.Partition.Value, consumeResult.Offset.Value);
+                metrics.DlqSkipped.Add(1, new KeyValuePair<string, object?>("dlq_topic", DeadLetterTopic), new KeyValuePair<string, object?>("reason", "deserialization_failed"));
+                return true;
         }
 
         try

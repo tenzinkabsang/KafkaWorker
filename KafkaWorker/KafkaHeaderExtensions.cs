@@ -19,12 +19,12 @@ internal static class KafkaHeaderExtensions
     public static void AddUtf8(this Headers headers, string key, string value)
         => headers.Add(key, Encoding.UTF8.GetBytes(value));
 
-    public static int GetReprocessAttemptCount(this Headers headers)
+    public static int GetReprocessAttemptCount(this Headers? headers)
     {
         var headerValue = headers.GetValue(KafkaHeaders.ReprocessedAttempt);
         return int.TryParse(headerValue, out var count) ? count : 0;
     }
 
-    public static bool IsInvalidMessage(this Headers headers)
+    public static bool IsInvalidMessage(this Headers? headers)
         => string.Equals(headers.GetValue(KafkaHeaders.InvalidMessage), "true", StringComparison.OrdinalIgnoreCase);
 }
