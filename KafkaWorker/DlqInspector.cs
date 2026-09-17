@@ -257,7 +257,10 @@ internal sealed partial class DlqInspector<TKey, TMessage>(
     {
         var headers = consumeResult.Message.Headers;
         var attempts = headers.GetReprocessAttemptCount();
-        var state = DetermineState(consumeResult, headers, attempts);
+        var state = DlqRecordClassifier.Classify(
+            consumeResult.Message.Value is not null,
+            headers,
+            MaxReprocessAttempts);
 
         return new DlqEntry<TMessage>
         {
@@ -269,35 +272,10 @@ internal sealed partial class DlqInspector<TKey, TMessage>(
             SourceTopic = headers.GetValue(KafkaHeaders.OriginalTopic),
             Error = headers.GetValue(KafkaHeaders.ErrorMessage),
             ReprocessAttempts = attempts,
-            RemainingAttempts = state == DlqEntryState.Retryable ? Math.Max(0, MaxReprocessAttempts - attempts) : 0,
+            RemainingAttempts = DlqRecordClassifier.RemainingAttempts(state, attempts, MaxReprocessAttempts),
             State = state,
             Headers = headers
         };
-    }
-
-    /// <summary>
-    /// Mirrors the order the sweep itself applies: a tombstone is committed past before anything
-    /// else is looked at, a captured poison record is never handed to a handler, and invalid beats
-    /// attempt-counting because it is permanent regardless of how many attempts remain.
-    /// </summary>
-    private DlqEntryState DetermineState(ConsumeResult<TKey, TMessage> consumeResult, Headers? headers, int attempts)
-    {
-        if (consumeResult.Message.Value is null)
-        {
-            return DlqEntryState.Tombstone;
-        }
-
-        if (string.Equals(headers.GetValue(KafkaHeaders.DeserializationFailed), "true", StringComparison.OrdinalIgnoreCase))
-        {
-            return DlqEntryState.Undeserializable;
-        }
-
-        if (headers.IsInvalidMessage())
-        {
-            return DlqEntryState.Invalid;
-        }
-
-        return attempts >= MaxReprocessAttempts ? DlqEntryState.AttemptsExhausted : DlqEntryState.Retryable;
     }
 
     /// <summary>

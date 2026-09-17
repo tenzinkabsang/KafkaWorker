@@ -115,6 +115,7 @@ public class DlqConsumerTests : IDisposable
         TestMessage? value = null,
         string? originalTopic = TestOriginalTopic,
         bool isInvalidMessage = false,
+        bool deserializationFailed = false,
         int reprocessAttempt = 0,
         string? batchId = null,
         long offset = 1,
@@ -130,6 +131,11 @@ public class DlqConsumerTests : IDisposable
         if (isInvalidMessage)
         {
             headers.Add(KafkaHeaders.InvalidMessage, Encoding.UTF8.GetBytes("true"));
+        }
+
+        if (deserializationFailed)
+        {
+            headers.Add(KafkaHeaders.DeserializationFailed, Encoding.UTF8.GetBytes("true"));
         }
 
         if (reprocessAttempt > 0)
@@ -1484,6 +1490,36 @@ public class DlqConsumerTests : IDisposable
             Arg.Is<object>(o => o.ToString()!.Contains("failed to deserialize")),
             Arg.Any<Exception?>(),
             Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public async Task Sweep_CapturedPoisonRecord_ThatHappensToDeserialize_IsStillSkipped()
+    {
+        using var sut = CreateConsumer();
+        var captured = CreateDlqConsumeResult(deserializationFailed: true);
+        SetupConsumeSequence(captured);
+
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
+
+        // The header says the main consumer could not read these bytes, so the record awaits a
+        // manual redrive no matter what this consumer's deserializer manages to make of them.
+        await _messageHandler.DidNotReceive()
+            .HandleMessageAsync(Arg.Any<TestMessage>(), Arg.Any<CancellationToken>());
+        _kafkaConsumer.Received(1).StoreOffset(captured);
+        _kafkaConsumer.Received(1).Commit();
+    }
+
+    [Fact]
+    public async Task Sweep_CapturedPoisonRecord_ThatHappensToDeserialize_DoesNotFireTerminalSink()
+    {
+        using var sut = CreateConsumer();
+        SetupConsumeSequence(CreateDlqConsumeResult(deserializationFailed: true));
+
+        await sut.SweepDeadLetterQueueAsync(TestBatchId, _cts.Token);
+
+        // A captured poison record never fires the typed sink — there is no typed message to hand it.
+        await _terminalSink.DidNotReceive()
+            .HandleAsync(Arg.Any<TerminalFailure<TestMessage>>(), Arg.Any<CancellationToken>());
     }
 
     #endregion
